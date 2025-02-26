@@ -1,10 +1,6 @@
 # Whoen
 
 <p align="center">
-  <img src="public/logo.png" alt="Whoen Logo" width="200" />
-</p>
-
-<p align="center">
   <strong>Malicious Request Detection Middleware for Go</strong>
 </p>
 

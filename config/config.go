@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -15,19 +17,64 @@ type Config struct {
 	SystemType      string        `json:"system_type"`
 	CleanupEnabled  bool          `json:"cleanup_enabled"`
 	CleanupInterval time.Duration `json:"cleanup_interval"`
+	StorageDir      string        `json:"storage_dir"`
 }
 
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() Config {
+	// Try to use a system-wide directory for storage if possible
+	storageDir := getDefaultStorageDir()
+
 	return Config{
-		BlockedIPsFile:  "blocked_ips.json",
-		GracePeriod:     1,              // 0 will block on first attempt
-		TimeoutEnabled:  true,           // Enable timeout
-		TimeoutDuration: 24 * time.Hour, // Timeout duration must be set if timeout is enabled
-		TimeoutIncrease: "linear",       // Timeout increase type (linear / geometric)
-		LogFile:         "whoen.log",    // where the log file is located
-		SystemType:      "linux",        // System type (mac / linux / windows)
-		CleanupEnabled:  false,          // Disabled by default
-		CleanupInterval: 1 * time.Hour,  // Run cleanup every hour when enabled
+		BlockedIPsFile:  filepath.Join(storageDir, "blocked_ips.json"),
+		GracePeriod:     1,                                      // 0 will block on first attempt
+		TimeoutEnabled:  true,                                   // Enable timeout
+		TimeoutDuration: 24 * time.Hour,                         // Timeout duration must be set if timeout is enabled
+		TimeoutIncrease: "linear",                               // Timeout increase type (linear / geometric)
+		LogFile:         filepath.Join(storageDir, "whoen.log"), // where the log file is located
+		SystemType:      "",                                     // Auto-detected in whoen.go
+		CleanupEnabled:  true,                                   // Enable cleanup by default
+		CleanupInterval: 1 * time.Hour,                          // Run cleanup every hour
+		StorageDir:      storageDir,                             // Store the directory for future reference
 	}
+}
+
+// getDefaultStorageDir returns the default directory for storing Whoen data
+func getDefaultStorageDir() string {
+	// Try to use a system-wide directory if possible
+	var baseDir string
+
+	// Check if we can write to /var/lib/whoen (Linux/Mac)
+	if _, err := os.Stat("/var/lib"); err == nil {
+		baseDir = "/var/lib/whoen"
+		// Try to create the directory
+		if err := os.MkdirAll(baseDir, 0755); err == nil {
+			// Test if we can write to it
+			testFile := filepath.Join(baseDir, ".test")
+			if f, err := os.Create(testFile); err == nil {
+				f.Close()
+				os.Remove(testFile)
+				return baseDir
+			}
+		}
+	}
+
+	// Check if we can use the user's home directory
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		baseDir = filepath.Join(homeDir, ".whoen")
+		if err := os.MkdirAll(baseDir, 0755); err == nil {
+			return baseDir
+		}
+	}
+
+	// Fall back to the current directory
+	return "."
+}
+
+// WithStorageDir sets a custom storage directory and updates file paths
+func (c Config) WithStorageDir(dir string) Config {
+	c.StorageDir = dir
+	c.BlockedIPsFile = filepath.Join(dir, filepath.Base(c.BlockedIPsFile))
+	c.LogFile = filepath.Join(dir, filepath.Base(c.LogFile))
+	return c
 }

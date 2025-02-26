@@ -3,6 +3,10 @@
 package whoen
 
 import (
+	"log"
+	"os"
+	"runtime"
+
 	"github.com/headswim/whoen/blocker"
 	"github.com/headswim/whoen/config"
 	"github.com/headswim/whoen/matcher"
@@ -17,6 +21,11 @@ func New() (*middleware.Middleware, error) {
 
 // NewWithConfig creates a new instance of the whoen middleware with custom configuration
 func NewWithConfig(cfg config.Config) (*middleware.Middleware, error) {
+	// Auto-detect system type if not specified
+	if cfg.SystemType == "" {
+		cfg.SystemType = getSystemType()
+	}
+
 	// Create storage
 	store, err := storage.NewJSONStorage(cfg.BlockedIPsFile)
 	if err != nil {
@@ -35,6 +44,7 @@ func NewWithConfig(cfg config.Config) (*middleware.Middleware, error) {
 		Storage:         store,
 		Matcher:         matchSvc,
 		Blocker:         blockSvc,
+		Logger:          log.New(os.Stdout, "[whoen] ", log.LstdFlags),
 		GracePeriod:     cfg.GracePeriod,
 		TimeoutEnabled:  cfg.TimeoutEnabled,
 		TimeoutDuration: cfg.TimeoutDuration,
@@ -45,6 +55,45 @@ func NewWithConfig(cfg config.Config) (*middleware.Middleware, error) {
 
 	// Create middleware
 	return middleware.New(opts)
+}
+
+// getSystemType returns the appropriate system type based on runtime.GOOS
+func getSystemType() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "mac"
+	case "windows":
+		return "windows"
+	default:
+		return "linux"
+	}
+}
+
+// RestoreBlocks restores OS-level blocks from previous runs
+// This should be called at application startup to ensure blocks persist across restarts
+func RestoreBlocks(blockedIPsFile string) error {
+	systemType := getSystemType()
+	return middleware.RestoreBlocks(blockedIPsFile, systemType)
+}
+
+// SetWhitelist allows setting a custom whitelist of IPs that should never be blocked
+func SetWhitelist(ips []string) {
+	matcher.Whitelist = ips
+}
+
+// AddToWhitelist adds IPs to the whitelist
+func AddToWhitelist(ips ...string) {
+	matcher.Whitelist = append(matcher.Whitelist, ips...)
+}
+
+// SetPatterns allows setting custom patterns for detecting malicious requests
+func SetPatterns(patterns []string) {
+	matcher.Patterns = patterns
+}
+
+// AddPatterns adds patterns to the existing list
+func AddPatterns(patterns ...string) {
+	matcher.Patterns = append(matcher.Patterns, patterns...)
 }
 
 // Expose important types from subpackages

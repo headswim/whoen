@@ -4,9 +4,16 @@ import (
 	"net/http"
 )
 
-// HTTPMiddleware is a middleware for standard net/http
+// HTTPMiddleware is a middleware for standard HTTP servers
 type HTTPMiddleware struct {
 	middleware *Middleware
+}
+
+// HTTP returns an HTTPMiddleware for the given Middleware
+func (m *Middleware) HTTP() *HTTPMiddleware {
+	return &HTTPMiddleware{
+		middleware: m,
+	}
 }
 
 // NewHTTP creates a new HTTP middleware
@@ -21,40 +28,50 @@ func NewHTTP(options Options) (*HTTPMiddleware, error) {
 	}, nil
 }
 
-// Handler returns a http.Handler that wraps the provided handler
+// Handler wraps an http.Handler with the middleware
 func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Get client IP
+		clientIP, err := getClientIP(r)
+		if err != nil {
+			m.middleware.logger.Printf("Error getting client IP: %v", err)
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Check if the request is malicious
 		blocked, err := m.middleware.HandleRequest(r)
 		if err != nil {
-			m.middleware.logger.Printf("Error handling request: %v", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			m.middleware.logger.Printf("Error handling request from %s: %v", clientIP, err)
+			next.ServeHTTP(w, r)
 			return
 		}
 
 		if blocked {
-			http.Error(w, "Forbidden", http.StatusForbidden)
+			m.middleware.logger.Printf("Blocked malicious request from %s to %s", clientIP, r.URL.Path)
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte("Forbidden: This request has been blocked for security reasons"))
 			return
 		}
 
+		// Continue processing the request
 		next.ServeHTTP(w, r)
 	})
 }
 
-// HandlerFunc returns a http.HandlerFunc that wraps the provided handler
-func (m *HTTPMiddleware) HandlerFunc(next http.HandlerFunc) http.HandlerFunc {
+// Middleware returns a function that can be used with http.HandleFunc
+func (m *HTTPMiddleware) Middleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		blocked, err := m.middleware.HandleRequest(r)
-		if err != nil {
-			m.middleware.logger.Printf("Error handling request: %v", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-
-		if blocked {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-
-		next(w, r)
+		m.Handler(next).ServeHTTP(w, r)
 	}
+}
+
+// CleanupExpired manually triggers cleanup of expired blocks
+func (m *HTTPMiddleware) CleanupExpired() error {
+	return m.middleware.CleanupExpired()
+}
+
+// GetOptions returns the middleware options
+func (m *HTTPMiddleware) GetOptions() Options {
+	return m.middleware.options
 }

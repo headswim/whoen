@@ -11,6 +11,13 @@ type GinMiddleware struct {
 	middleware *Middleware
 }
 
+// Gin returns a GinMiddleware for the given Middleware
+func (m *Middleware) Gin() *GinMiddleware {
+	return &GinMiddleware{
+		middleware: m,
+	}
+}
+
 // NewGin creates a new Gin middleware
 func NewGin(options Options) (*GinMiddleware, error) {
 	middleware, err := New(options)
@@ -26,18 +33,22 @@ func NewGin(options Options) (*GinMiddleware, error) {
 // Middleware returns a Gin middleware function
 func (m *GinMiddleware) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Get client IP
+		clientIP := c.ClientIP()
+
+		// Check if the request is malicious
 		blocked, err := m.middleware.HandleRequest(c.Request)
 		if err != nil {
-			m.middleware.logger.Printf("Error handling request: %v", err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"error": "Internal Server Error",
-			})
+			m.middleware.logger.Printf("Error handling request from %s: %v", clientIP, err)
+			c.Next() // Continue processing the request even if there's an error
 			return
 		}
 
 		if blocked {
+			m.middleware.logger.Printf("Blocked malicious request from %s to %s", clientIP, c.Request.URL.Path)
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Forbidden",
+				"error":   "Forbidden",
+				"message": "This request has been blocked for security reasons",
 			})
 			return
 		}

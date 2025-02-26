@@ -1,10 +1,12 @@
 package middleware
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/headswim/whoen/blocker"
@@ -335,62 +337,83 @@ func (m *Middleware) CleanupExpired() error {
 	return nil
 }
 
-// RestoreBlocks is a helper function that can be called from main to restore blocks after a system restart
-// Example usage in main:
-//
-//	if err := whoen.RestoreBlocks("blocked_ips.json", "linux"); err != nil {
-//	    log.Printf("Error restoring blocks: %v", err)
-//	}
+// RestoreBlocks restores OS-level blocks from previous runs
 func RestoreBlocks(blockedIPsFile, systemType string) error {
+	// Create the directory if it doesn't exist
+	dir := filepath.Dir(blockedIPsFile)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory for blocked IPs file: %v", err)
+	}
+
+	// Check if the file exists
+	if _, err := os.Stat(blockedIPsFile); os.IsNotExist(err) {
+		// File doesn't exist, create an empty one
+		emptyFile, err := os.Create(blockedIPsFile)
+		if err != nil {
+			return fmt.Errorf("failed to create blocked IPs file: %v", err)
+		}
+		emptyFile.Write([]byte("[]"))
+		emptyFile.Close()
+		// No blocks to restore
+		return nil
+	}
+
+	// Create a logger for the restore operation
+	logger := log.New(os.Stdout, "[whoen-restore] ", log.LstdFlags)
+
 	// Create a storage instance
-	storage, err := storage.NewJSONStorage(blockedIPsFile)
+	store, err := storage.NewJSONStorage(blockedIPsFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create storage: %v", err)
 	}
 
-	// Get all blocked IPs from storage
-	blockedIPs, err := storage.GetBlockedIPs()
-	if err != nil {
-		return err
+	// Load the blocked IPs
+	if err := store.Load(); err != nil {
+		return fmt.Errorf("failed to load blocked IPs: %v", err)
 	}
 
-	// Create a blocker instance
-	blockService := blocker.NewServiceWithSystemType(systemType)
+	// Get all blocked IPs
+	blockedIPs, err := store.GetBlockedIPs()
+	if err != nil {
+		return fmt.Errorf("failed to get blocked IPs: %v", err)
+	}
+
+	// Create a blocker service
+	blockSvc := blocker.NewServiceWithSystemType(systemType)
 
 	// Restore blocks
-	now := time.Now()
-	restored := 0
-	skipped := 0
-
+	restoredCount := 0
+	skippedCount := 0
 	for _, status := range blockedIPs {
 		// Skip expired blocks
-		if !status.IsPermanent && now.After(status.BlockedUntil) {
-			skipped++
+		if !status.IsPermanent && time.Now().After(status.BlockedUntil) {
+			skippedCount++
 			continue
 		}
 
-		// Reapply the block at OS level
+		// Determine block type and duration
+		blockType := blocker.Timeout
+		var duration time.Duration
 		if status.IsPermanent {
-			_, err := blockService.Block(status.IP, blocker.Ban, 0)
-			if err != nil {
-				return err
-			}
+			blockType = blocker.Ban
+			duration = 0
 		} else {
-			// Calculate remaining duration
-			remainingDuration := status.BlockedUntil.Sub(now)
-			if remainingDuration <= 0 {
-				skipped++
+			duration = status.BlockedUntil.Sub(time.Now())
+			if duration <= 0 {
+				skippedCount++
 				continue
 			}
-
-			_, err := blockService.Block(status.IP, blocker.Timeout, remainingDuration)
-			if err != nil {
-				return err
-			}
 		}
-		restored++
+
+		// Block the IP
+		if _, err := blockSvc.Block(status.IP, blockType, duration); err != nil {
+			logger.Printf("Failed to restore block for IP %s: %v", status.IP, err)
+			continue
+		}
+
+		restoredCount++
 	}
 
-	log.Printf("Restored %d IP blocks, skipped %d expired blocks", restored, skipped)
+	logger.Printf("Restored %d blocks, skipped %d expired blocks", restoredCount, skippedCount)
 	return nil
 }
