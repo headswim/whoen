@@ -5,8 +5,8 @@ import (
 	"log"
 	"net/http"
 
-	"whoen/config"
-	"whoen/middleware"
+	"github.com/headswim/whoen/config"
+	"github.com/headswim/whoen/middleware"
 )
 
 // Note: In a real implementation, you would import the Chi router:

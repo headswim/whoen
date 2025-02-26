@@ -7,10 +7,10 @@ import (
 	"os"
 	"time"
 
-	"whoen/blocker"
-	"whoen/config"
-	"whoen/matcher"
-	"whoen/storage"
+	"github.com/headswim/whoen/blocker"
+	"github.com/headswim/whoen/config"
+	"github.com/headswim/whoen/matcher"
+	"github.com/headswim/whoen/storage"
 )
 
 // Options represents the options for the middleware

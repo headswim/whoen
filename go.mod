@@ -1,4 +1,4 @@
-module whoen
+module github.com/headswim/whoen
 
 go 1.23.3
 
