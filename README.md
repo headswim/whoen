@@ -43,26 +43,26 @@ package main
 import (
     "log"
     "net/http"
-    "github.com/headswim/whoen/middleware"
+    "github.com/headswim/whoen"
 )
 
 func main() {
-    // Restore OS-level blocks from previous runs (IMPORTANT)
-    if err := middleware.RestoreBlocks("blocked_ips.json", "linux"); err != nil {
-        log.Printf("Error restoring blocks: %v", err)
-    }
-    
-    // Initialize Whoen middleware with default configuration
-    options := middleware.DefaultOptions()
-    httpMiddleware, err := middleware.NewHTTP(options)
+    // Create middleware with default configuration
+    mw, err := whoen.New()
     if err != nil {
         log.Fatalf("Error creating middleware: %v", err)
     }
-    
-    // Wrap your existing handler with Whoen middleware
-    http.Handle("/", httpMiddleware.Handler(yourHandler))
-    
-    http.ListenAndServe(":8080", nil)
+
+    // Create a simple handler
+    handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Write([]byte("Hello, World!"))
+    })
+
+    // Wrap the handler with the middleware
+    http.Handle("/", mw.HTTP().Handler(handler))
+
+    // Start the server
+    log.Fatal(http.ListenAndServe(":8080", nil))
 }
 ```
 
@@ -74,32 +74,29 @@ package main
 import (
     "log"
     "github.com/gin-gonic/gin"
-    "github.com/headswim/whoen/middleware"
+    "github.com/headswim/whoen"
 )
 
 func main() {
-    // Restore OS-level blocks from previous runs (IMPORTANT)
-    if err := middleware.RestoreBlocks("blocked_ips.json", "linux"); err != nil {
-        log.Printf("Error restoring blocks: %v", err)
-    }
-    
-    router := gin.Default()
-    
-    // Initialize and use Whoen middleware
-    options := middleware.DefaultOptions()
-    ginMiddleware, err := middleware.NewGin(options)
+    // Create middleware with default configuration
+    mw, err := whoen.New()
     if err != nil {
         log.Fatalf("Error creating middleware: %v", err)
     }
-    
-    router.Use(ginMiddleware.Middleware())
-    
-    // Your routes
-    router.GET("/", func(c *gin.Context) {
-        c.String(200, "Hello World")
+
+    // Create a Gin router
+    r := gin.Default()
+
+    // Use the middleware
+    r.Use(mw.Gin().Middleware())
+
+    // Add a route
+    r.GET("/", func(c *gin.Context) {
+        c.String(200, "Hello, World!")
     })
-    
-    router.Run(":8080")
+
+    // Start the server
+    r.Run(":8080")
 }
 ```
 
@@ -112,32 +109,63 @@ import (
     "log"
     "net/http"
     "github.com/go-chi/chi/v5"
-    "github.com/headswim/whoen/middleware"
+    "github.com/headswim/whoen"
 )
 
 func main() {
-    // Restore OS-level blocks from previous runs (IMPORTANT)
-    if err := middleware.RestoreBlocks("blocked_ips.json", "linux"); err != nil {
-        log.Printf("Error restoring blocks: %v", err)
-    }
-    
-    router := chi.NewRouter()
-    
-    // Initialize and use Whoen middleware
-    options := middleware.DefaultOptions()
-    chiMiddleware, err := middleware.NewChi(options)
+    // Create middleware with default configuration
+    mw, err := whoen.New()
     if err != nil {
         log.Fatalf("Error creating middleware: %v", err)
     }
-    
-    router.Use(chiMiddleware.Middleware)
-    
-    // Your routes
-    router.Get("/", func(w http.ResponseWriter, r *http.Request) {
-        w.Write([]byte("Hello World"))
+
+    // Create a Chi router
+    r := chi.NewRouter()
+
+    // Use the middleware
+    r.Use(mw.Chi().Middleware)
+
+    // Add a route
+    r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+        w.Write([]byte("Hello, World!"))
     })
-    
-    http.ListenAndServe(":8080", router)
+
+    // Start the server
+    log.Fatal(http.ListenAndServe(":8080", r))
+}
+```
+
+### Custom Configuration
+
+```go
+package main
+
+import (
+    "log"
+    "time"
+    "github.com/headswim/whoen"
+)
+
+func main() {
+    // Create custom configuration
+    cfg := whoen.Config{
+        BlockedIPsFile:  "blocked_ips.json",
+        GracePeriod:     3,                // Block after 3 suspicious requests
+        TimeoutEnabled:  true,
+        TimeoutDuration: 1 * time.Hour,    // Block for 1 hour
+        TimeoutIncrease: "geometric",      // Increase timeout geometrically for repeat offenders
+        SystemType:      "linux",          // or "mac", "windows"
+        CleanupEnabled:  true,
+        CleanupInterval: 30 * time.Minute, // Clean up expired blocks every 30 minutes
+    }
+
+    // Create middleware with custom configuration
+    mw, err := whoen.NewWithConfig(cfg)
+    if err != nil {
+        log.Fatalf("Error creating middleware: %v", err)
+    }
+
+    // Use the middleware with your preferred framework...
 }
 ```
 
