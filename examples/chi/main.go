@@ -13,6 +13,11 @@ import (
 // import "github.com/go-chi/chi/v5"
 
 func main() {
+	// Restore OS-level blocks from previous runs (IMPORTANT)
+	if err := middleware.RestoreBlocks("blocked_ips.json", "linux"); err != nil {
+		log.Printf("Error restoring blocks: %v", err)
+	}
+
 	// Load configuration
 	cfg := config.DefaultConfig()
 

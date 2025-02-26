@@ -1,7 +1,7 @@
 # Whoen
 
 <p align="center">
-  <img src="docs/logo.png" alt="Whoen Logo" width="200" />
+  <img src="public/logo.png" alt="Whoen Logo" width="200" />
 </p>
 
 <p align="center">
@@ -9,10 +9,13 @@
 </p>
 
 <p align="center">
+  <a href="#overview">Overview</a> •
   <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •
-  <a href="#features">Features</a> •
+  <a href="#key-features">Key Features</a> •
   <a href="#configuration">Configuration</a> •
+  <a href="#advanced-usage">Advanced Usage</a> •
+  <a href="#architecture">Architecture</a> •
   <a href="#examples">Examples</a> •
   <a href="#contributing">Contributing</a> •
   <a href="#license">License</a>
@@ -89,18 +92,7 @@ func main() {
         log.Fatalf("Error creating middleware: %v", err)
     }
     
-    router.Use(func(c *gin.Context) {
-        ginContext := &middleware.GinContext{
-            Request: c.Request,
-            Writer:  c.Writer,
-        }
-        ginMiddleware.Middleware()(ginContext)
-        if c.Writer.Written() {
-            c.Abort()
-            return
-        }
-        c.Next()
-    })
+    router.Use(ginMiddleware.Middleware())
     
     // Your routes
     router.GET("/", func(c *gin.Context) {
@@ -149,12 +141,13 @@ func main() {
 }
 ```
 
-## Features
+## Key Features
 
 ### Malicious Request Detection
 
 - Pattern-based detection of suspicious request paths
 - Extensible pattern library for common attack vectors
+- Intelligent matching against known malicious patterns
 
 ### Flexible Blocking Strategies
 
@@ -178,6 +171,8 @@ func main() {
 - Chi router
 
 ## Configuration
+
+### Basic Configuration
 
 Whoen can be configured programmatically:
 
@@ -236,11 +231,121 @@ var Whitelist = []string{
 
 Whitelisted IPs will bypass all blocking mechanisms and their requests will be allowed even if they match malicious patterns.
 
-## JSON Data Files
+## Advanced Usage
+
+### OS-Level Block Persistence
+
+Whoen uses OS-level firewall commands (iptables on Linux, pfctl on macOS, netsh on Windows) to block malicious IPs. These blocks are stored in the JSON file for persistence, but the OS-level firewall rules themselves do not persist across system restarts.
+
+**IMPORTANT**: To ensure that blocked IPs remain blocked after your application restarts, you must call the `RestoreBlocks` function at the beginning of your `main` function:
+
+```go
+func main() {
+    // Restore OS-level blocks from previous runs
+    // Parameters: 
+    // - JSON file path: Path to the file where blocked IPs are stored
+    // - System type: "linux", "mac", or "windows" (must match your OS)
+    if err := middleware.RestoreBlocks("blocked_ips.json", "linux"); err != nil {
+        log.Printf("Error restoring blocks: %v", err)
+    }
+    
+    // Rest of your application initialization...
+}
+```
+
+This function:
+- Reads the blocked IPs from your JSON storage file
+- Reapplies the OS-level firewall rules for all non-expired blocks
+- Skips any blocks that have already expired
+- Logs the number of restored and skipped blocks
+
+**Note**: The OS-level blocking commands require sudo/administrator privileges. Make sure your application has the necessary permissions to execute these commands.
+
+### Custom Logger Integration
+
+By default, Whoen uses its own internal logger. However, you can integrate with your application's logging system by providing a custom logger that implements the standard Go `*log.Logger` interface:
+
+```go
+// Create a custom logger
+customLogger := log.New(os.Stdout, "[my-app] ", log.LstdFlags)
+
+// Create middleware with the custom logger
+options := middleware.DefaultOptions()
+options.Logger = customLogger
+
+httpMiddleware, err := middleware.NewHTTP(options)
+if err != nil {
+    log.Fatalf("Error creating middleware: %v", err)
+}
+```
+
+### Automatic Cleanup of Expired Blocks
+
+By default, Whoen cleans up expired blocks when checking if an IP is blocked. However, this is a reactive approach and may leave some expired blocks in the system if they are not checked.
+
+For a more proactive approach, you can enable the periodic cleanup service by setting `CleanupEnabled` to true in your configuration:
+
+```go
+// Enable cleanup in the configuration
+cfg := config.DefaultConfig()
+cfg.CleanupEnabled = true
+cfg.CleanupInterval = 1 * time.Hour
+
+// Or directly in the options
+options := middleware.DefaultOptions()
+options.CleanupEnabled = true
+options.CleanupInterval = 1 * time.Hour
+```
+
+This will run a background goroutine that periodically cleans up expired blocks, ensuring that both the storage and OS-level blocks are properly removed.
+
+### Malicious Pattern Detection
+
+Whoen comes with a predefined list of malicious patterns that it checks against request paths:
+
+- Common admin panels (wp-admin, phpmyadmin, etc.)
+- Configuration files (.env, .htaccess, etc.)
+- Debug endpoints (actuator, metrics, debug/pprof, etc.)
+- Installation and setup paths
+- And many more
+
+You can extend or replace the default malicious path patterns:
+
+```go
+// File: matcher/patterns.go
+package matcher
+
+// Patterns is a list of predefined malicious path patterns used to detect malicious requests
+var Patterns = []string{
+    "/.env",
+    "/wp-admin",
+    "/admin",
+    "/config",
+    "/backup",
+    "/.git",
+    "/wp-login.php",
+    "/phpmyadmin",
+    // ... more patterns
+
+    // Add your custom patterns here
+    "/your-custom-pattern",
+    "/another-pattern",
+}
+```
+
+### OS-Level Blocking Mechanisms
+
+Whoen blocks IPs at the operating system level using the following mechanisms:
+
+- **Linux**: Uses iptables to block IPs
+- **macOS**: Uses pfctl (Packet Filter) to block IPs
+- **Windows**: Uses Windows Firewall (netsh) to block IPs
+
+### JSON Data Files
 
 Whoen uses JSON files for persistence:
 
-### blocked_ips.json
+#### blocked_ips.json
 
 This file stores information about blocked IPs, including their request counts, timeout status, and more:
 
@@ -266,6 +371,42 @@ This file stores information about blocked IPs, including their request counts, 
 ]
 ```
 
+## Architecture
+
+Whoen consists of several core components working together to provide comprehensive protection:
+
+### Blocker
+
+The blocker component handles the actual blocking of IP addresses at the operating system level:
+
+- Interface defining methods for blocking, unblocking, and checking IP status
+- Service implementing the blocking logic using OS-specific commands
+- Support for both temporary timeouts and permanent bans
+
+### Matcher
+
+The matcher component identifies malicious requests:
+
+- Pattern matching against known malicious request paths
+- Whitelist management for trusted IPs
+- Efficient pattern matching with O(1) lookups
+
+### Storage
+
+The storage component persists blocked IP information:
+
+- Interface for storing and retrieving blocked IP data
+- JSON implementation with periodic auto-saving
+- Detailed tracking of each blocked IP's status
+
+### Middleware
+
+The middleware component ties everything together:
+
+- Core logic for request processing and decision making
+- Framework adapters for different web frameworks
+- Extensive configuration options
+
 ## Examples
 
 Complete examples for each supported framework can be found in the `examples/` directory:
@@ -273,96 +414,6 @@ Complete examples for each supported framework can be found in the `examples/` d
 - `examples/http/` - Standard Go HTTP server example
 - `examples/gin/` - Gin framework example
 - `examples/chi/` - Chi router example
-
-## Advanced Usage
-
-### Custom Logger Integration
-
-By default, Whoen uses its own internal logger. However, you can integrate with your application's logging system:
-
-```go
-// Create middleware with a custom logger
-options := middleware.DefaultOptions()
-options.Logger = yourLoggerImplementation
-
-httpMiddleware, err := middleware.NewHTTP(options)
-if err != nil {
-    log.Fatalf("Error creating middleware: %v", err)
-}
-```
-
-### OS-Level Block Persistence
-
-Whoen uses OS-level firewall commands (iptables on Linux, pfctl on macOS, netsh on Windows) to block malicious IPs. These blocks are stored in the JSON file for persistence, but the OS-level firewall rules themselves do not persist across system restarts.
-
-**IMPORTANT**: To ensure that blocked IPs remain blocked after your application restarts, you must call the `RestoreBlocks` function at the beginning of your `main` function:
-
-```go
-func main() {
-    // Restore OS-level blocks from previous runs
-    // Parameters: JSON file path, system type ("linux", "mac", or "windows")
-    if err := middleware.RestoreBlocks("blocked_ips.json", "linux"); err != nil {
-        log.Printf("Error restoring blocks: %v", err)
-    }
-    
-    // Rest of your application initialization...
-}
-```
-
-This function:
-- Reads the blocked IPs from your JSON storage file
-- Reapplies the OS-level firewall rules for all non-expired blocks
-- Skips any blocks that have already expired
-- Logs the number of restored and skipped blocks
-
-**Note**: The OS-level blocking commands require sudo/administrator privileges. Make sure your application has the necessary permissions to execute these commands.
-
-### Automatic Cleanup of Expired Blocks
-
-By default, Whoen cleans up expired blocks when checking if an IP is blocked. However, this is a reactive approach and may leave some expired blocks in the system if they are not checked. For a more proactive approach, you can enable the periodic cleanup service by uncommenting the relevant code in the middleware:
-
-```go
-// In middleware/middleware.go, uncomment the following code in the New function:
-cleanupTicker := time.NewTicker(1 * time.Hour)
-go func() {
-    for {
-        select {
-        case <-cleanupTicker.C:
-            if err := m.CleanupExpired(); err != nil {
-                m.logger.Printf("Error cleaning up expired blocks: %v", err)
-            }
-        }
-    }
-}()
-```
-
-This will run a background goroutine that periodically cleans up expired blocks, ensuring that both the storage and OS-level blocks are properly removed.
-
-### Custom Malicious Path Patterns
-
-You can extend or replace the default malicious path patterns:
-
-```go
-// File: matcher/patterns.go
-package matcher
-
-// Patterns is a list of predefined malicious path patterns used to detect malicious requests
-var Patterns = []string{
-    "/.env",
-    "/wp-admin",
-    "/admin",
-    "/config",
-    "/backup",
-    "/.git",
-    "/wp-login.php",
-    "/phpmyadmin",
-    // ... more patterns
-
-    // Add your custom patterns here
-    "/your-custom-pattern",
-    "/another-pattern",
-}
-```
 
 ## Contributing
 
