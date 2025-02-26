@@ -7,6 +7,8 @@ import (
 
 	"whoen/config"
 	"whoen/middleware"
+
+	"github.com/gin-gonic/gin"
 )
 
 // Note: In a real implementation, you would import the Gin framework:
@@ -16,46 +18,52 @@ func main() {
 	// Load configuration
 	cfg := config.DefaultConfig()
 
+	// Uncomment the following lines to enable periodic cleanup
+	// cfg.CleanupEnabled = true
+	// cfg.CleanupInterval = 1 * time.Hour
+
 	// Create middleware
 	options := middleware.DefaultOptions()
 	options.Config = cfg
 
-	// In a real implementation, you would use this:
-	// ginMiddleware, err := middleware.NewGin(options)
-	// if err != nil {
-	//     log.Fatalf("Error creating middleware: %v", err)
-	// }
+	// You can also enable cleanup directly in the options
+	// options.CleanupEnabled = true
+	// options.CleanupInterval = 1 * time.Hour
 
-	// In a real implementation, you would create a Gin router:
-	// r := gin.Default()
-	// r.Use(func(c *gin.Context) {
-	//     ginContext := &middleware.GinContext{
-	//         Request: c.Request,
-	//         Writer:  c.Writer,
-	//     }
-	//     ginMiddleware.Middleware()(ginContext)
-	//     if c.Writer.Written() {
-	//         c.Abort()
-	//         return
-	//     }
-	//     c.Next()
-	// })
-
-	// For this example, we'll use the standard HTTP server
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Hello from Gin example, %s!", r.URL.Path[1:])
-	})
-
-	// Since we can't use the Gin middleware directly with the standard HTTP server,
-	// we'll use the HTTP middleware instead for this example
-	httpMiddleware, err := middleware.NewHTTP(options)
+	// Create Gin middleware
+	ginMiddleware, err := middleware.NewGin(options)
 	if err != nil {
-		log.Fatalf("Error creating HTTP middleware: %v", err)
+		log.Fatalf("Error creating middleware: %v", err)
 	}
 
-	http.Handle("/", httpMiddleware.Handler(handler))
+	// Create a Gin router
+	r := gin.Default()
+
+	// Use the middleware
+	r.Use(ginMiddleware.Middleware())
+
+	// Add a route
+	r.GET("/:name", func(c *gin.Context) {
+		name := c.Param("name")
+		c.JSON(http.StatusOK, gin.H{
+			"message": fmt.Sprintf("Hello from Gin example, %s!", name),
+		})
+	})
+
+	// Add a route to manually trigger cleanup
+	r.GET("/admin/cleanup", func(c *gin.Context) {
+		if err := ginMiddleware.CleanupExpired(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Sprintf("Error cleaning up expired blocks: %v", err),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Cleanup completed successfully",
+		})
+	})
 
 	// Start the server
 	fmt.Println("Starting server on :8082...")
-	log.Fatal(http.ListenAndServe(":8082", nil))
+	log.Fatal(r.Run(":8082"))
 }

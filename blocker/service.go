@@ -180,33 +180,83 @@ func (s *Service) CleanupExpired() error {
 	return nil
 }
 
+// RestoreBlocks restores blocks from a list of IPs and expiration times
+// This can be called from the main application to restore blocks after a restart
+func (s *Service) RestoreBlocks(ips map[string]time.Time) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	now := time.Now()
+	restored := 0
+	skipped := 0
+
+	for ip, expiration := range ips {
+		// Skip expired blocks
+		if !expiration.IsZero() && now.After(expiration) {
+			skipped++
+			continue
+		}
+
+		// Apply the block at OS level
+		var err error
+		if s.systemType == "linux" {
+			err = blockIPLinux(ip)
+		} else if s.systemType == "darwin" {
+			err = blockIPDarwin(ip)
+		} else if s.systemType == "windows" {
+			err = blockIPWindows(ip)
+		} else {
+			return fmt.Errorf("unsupported system type: %s", s.systemType)
+		}
+
+		if err != nil {
+			return fmt.Errorf("failed to restore block for IP %s: %v", ip, err)
+		}
+
+		// Update the blocked IPs map
+		s.blockedIPs[ip] = expiration
+		restored++
+	}
+
+	fmt.Printf("Restored %d IP blocks, skipped %d expired blocks\n", restored, skipped)
+	return nil
+}
+
 // blockIPLinux blocks an IP on Linux using iptables
 func blockIPLinux(ip string) error {
 	// Use -I INPUT 1 to insert at the beginning of the chain for highest priority
 	cmd := exec.Command("sudo", "iptables", "-I", "INPUT", "1", "-s", ip, "-j", "DROP")
-	if err := cmd.Run(); err != nil {
-		return err
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to block IP %s with iptables: %v (output: %s)", ip, err, string(output))
 	}
 
 	// Also block outgoing connections to this IP for complete isolation
 	outCmd := exec.Command("sudo", "iptables", "-I", "OUTPUT", "1", "-d", ip, "-j", "DROP")
-	return outCmd.Run()
+	outOutput, outErr := outCmd.CombinedOutput()
+	if outErr != nil {
+		return fmt.Errorf("failed to block outgoing connections to IP %s with iptables: %v (output: %s)", ip, outErr, string(outOutput))
+	}
+	return nil
 }
 
 // unblockIPLinux unblocks an IP on Linux using iptables
 func unblockIPLinux(ip string) error {
 	// Remove both INPUT and OUTPUT rules
 	inCmd := exec.Command("sudo", "iptables", "-D", "INPUT", "-s", ip, "-j", "DROP")
-	inErr := inCmd.Run()
+	inOutput, inErr := inCmd.CombinedOutput()
 
 	outCmd := exec.Command("sudo", "iptables", "-D", "OUTPUT", "-d", ip, "-j", "DROP")
-	outErr := outCmd.Run()
+	outOutput, outErr := outCmd.CombinedOutput()
 
 	// Return an error if either command failed
 	if inErr != nil {
-		return inErr
+		return fmt.Errorf("failed to unblock IP %s with iptables (INPUT): %v (output: %s)", ip, inErr, string(inOutput))
 	}
-	return outErr
+	if outErr != nil {
+		return fmt.Errorf("failed to unblock IP %s with iptables (OUTPUT): %v (output: %s)", ip, outErr, string(outOutput))
+	}
+	return nil
 }
 
 // blockIPDarwin blocks an IP on macOS using pfctl
@@ -217,39 +267,48 @@ func blockIPDarwin(ip string) error {
 	if err != nil {
 		// If the table doesn't exist, create it
 		createCmd := exec.Command("sudo", "pfctl", "-t", "blocklist", "-T", "create")
-		if createErr := createCmd.Run(); createErr != nil {
-			return createErr
+		createOutput, createErr := createCmd.CombinedOutput()
+		if createErr != nil {
+			return fmt.Errorf("failed to create blocklist table with pfctl: %v (output: %s)", createErr, string(createOutput))
 		}
 	}
 
 	if !strings.Contains(string(output), ip) {
 		// Add the IP to the blocklist table
 		addCmd := exec.Command("sudo", "pfctl", "-t", "blocklist", "-T", "add", ip)
-		if err := addCmd.Run(); err != nil {
-			return err
+		addOutput, addErr := addCmd.CombinedOutput()
+		if addErr != nil {
+			return fmt.Errorf("failed to add IP %s to blocklist with pfctl: %v (output: %s)", ip, addErr, string(addOutput))
 		}
 	}
 
 	// Make sure pf is enabled
 	enableCmd := exec.Command("sudo", "pfctl", "-e")
-	enableErr := enableCmd.Run()
+	enableOutput, enableErr := enableCmd.CombinedOutput()
 
 	// Ensure the blocklist table is referenced in the pf rules
 	// This adds a rule to block all traffic to/from the IPs in the blocklist table
 	ruleCmd := exec.Command("sudo", "sh", "-c",
 		`echo "block drop in quick from <blocklist> to any" | sudo pfctl -f - -a blocklist`)
-	ruleErr := ruleCmd.Run()
+	ruleOutput, ruleErr := ruleCmd.CombinedOutput()
 
 	if enableErr != nil {
-		return enableErr
+		return fmt.Errorf("failed to enable pf: %v (output: %s)", enableErr, string(enableOutput))
 	}
-	return ruleErr
+	if ruleErr != nil {
+		return fmt.Errorf("failed to add blocklist rule with pfctl: %v (output: %s)", ruleErr, string(ruleOutput))
+	}
+	return nil
 }
 
 // unblockIPDarwin unblocks an IP on macOS using pfctl
 func unblockIPDarwin(ip string) error {
 	cmd := exec.Command("sudo", "pfctl", "-t", "blocklist", "-T", "delete", ip)
-	return cmd.Run()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to unblock IP %s with pfctl: %v (output: %s)", ip, err, string(output))
+	}
+	return nil
 }
 
 // blockIPWindows blocks an IP on Windows using netsh
@@ -262,8 +321,9 @@ func blockIPWindows(ip string) error {
 		"remoteip="+ip,
 		"enable=yes",
 		"profile=any")
-	if err := inCmd.Run(); err != nil {
-		return err
+	inOutput, inErr := inCmd.CombinedOutput()
+	if inErr != nil {
+		return fmt.Errorf("failed to block inbound connections from IP %s with netsh: %v (output: %s)", ip, inErr, string(inOutput))
 	}
 
 	// Block outbound connections
@@ -274,7 +334,11 @@ func blockIPWindows(ip string) error {
 		"remoteip="+ip,
 		"enable=yes",
 		"profile=any")
-	return outCmd.Run()
+	outOutput, outErr := outCmd.CombinedOutput()
+	if outErr != nil {
+		return fmt.Errorf("failed to block outbound connections to IP %s with netsh: %v (output: %s)", ip, outErr, string(outOutput))
+	}
+	return nil
 }
 
 // unblockIPWindows unblocks an IP on Windows using netsh
@@ -282,16 +346,19 @@ func unblockIPWindows(ip string) error {
 	// Remove inbound rule
 	inCmd := exec.Command("netsh", "advfirewall", "firewall", "delete", "rule",
 		"name=BlockIP_In_"+ip)
-	inErr := inCmd.Run()
+	inOutput, inErr := inCmd.CombinedOutput()
 
 	// Remove outbound rule
 	outCmd := exec.Command("netsh", "advfirewall", "firewall", "delete", "rule",
 		"name=BlockIP_Out_"+ip)
-	outErr := outCmd.Run()
+	outOutput, outErr := outCmd.CombinedOutput()
 
 	// Return an error if either command failed
 	if inErr != nil {
-		return inErr
+		return fmt.Errorf("failed to unblock inbound connections from IP %s with netsh: %v (output: %s)", ip, inErr, string(inOutput))
 	}
-	return outErr
+	if outErr != nil {
+		return fmt.Errorf("failed to unblock outbound connections to IP %s with netsh: %v (output: %s)", ip, outErr, string(outOutput))
+	}
+	return nil
 }

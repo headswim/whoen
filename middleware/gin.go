@@ -2,18 +2,9 @@ package middleware
 
 import (
 	"net/http"
+
+	"github.com/gin-gonic/gin"
 )
-
-// GinHandlerFunc is a type alias for Gin's handler function
-type GinHandlerFunc func(*GinContext)
-
-// GinContext is a type alias for Gin's context
-type GinContext struct {
-	Request *http.Request
-	Writer  http.ResponseWriter
-	// Other fields would be here in a real implementation
-	// but we're keeping it simple for this example
-}
 
 // GinMiddleware is a middleware for the Gin framework
 type GinMiddleware struct {
@@ -33,23 +24,35 @@ func NewGin(options Options) (*GinMiddleware, error) {
 }
 
 // Middleware returns a Gin middleware function
-func (m *GinMiddleware) Middleware() GinHandlerFunc {
-	return func(c *GinContext) {
+func (m *GinMiddleware) Middleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
 		blocked, err := m.middleware.HandleRequest(c.Request)
 		if err != nil {
 			m.middleware.logger.Printf("Error handling request: %v", err)
-			c.Writer.WriteHeader(http.StatusInternalServerError)
-			c.Writer.Write([]byte("Internal Server Error"))
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+				"error": "Internal Server Error",
+			})
 			return
 		}
 
 		if blocked {
-			c.Writer.WriteHeader(http.StatusForbidden)
-			c.Writer.Write([]byte("Forbidden"))
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "Forbidden",
+			})
 			return
 		}
 
 		// Continue processing the request
-		// In a real implementation, this would call c.Next()
+		c.Next()
 	}
+}
+
+// CleanupExpired manually triggers cleanup of expired blocks
+func (m *GinMiddleware) CleanupExpired() error {
+	return m.middleware.CleanupExpired()
+}
+
+// GetOptions returns the middleware options
+func (m *GinMiddleware) GetOptions() Options {
+	return m.middleware.options
 }

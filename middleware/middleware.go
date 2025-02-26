@@ -24,6 +24,8 @@ type Options struct {
 	TimeoutEnabled  bool
 	TimeoutDuration time.Duration
 	TimeoutIncrease string // "linear" or "geometric"
+	CleanupEnabled  bool
+	CleanupInterval time.Duration
 }
 
 // DefaultOptions returns the default options
@@ -35,6 +37,8 @@ func DefaultOptions() Options {
 		TimeoutEnabled:  cfg.TimeoutEnabled,
 		TimeoutDuration: cfg.TimeoutDuration,
 		TimeoutIncrease: cfg.TimeoutIncrease,
+		CleanupEnabled:  cfg.CleanupEnabled,
+		CleanupInterval: cfg.CleanupInterval,
 		Logger:          log.New(os.Stdout, "[whoen] ", log.LstdFlags),
 	}
 }
@@ -83,21 +87,23 @@ func New(options Options) (*Middleware, error) {
 		m.blocker = options.Blocker
 	}
 
-	/*
-		Uncomment to enable periodic cleanup of expired blocks
-		// This will run a background goroutine that periodically cleans up expired blocks
-		cleanupTicker := time.NewTicker(1 * time.Hour)
+	// Start periodic cleanup if enabled
+	if options.CleanupEnabled {
+		cleanupTicker := time.NewTicker(options.CleanupInterval)
 		go func() {
-		    for {
-		        select {
-		        case <-cleanupTicker.C:
-		            if err := m.CleanupExpired(); err != nil {
-		                m.logger.Printf("Error cleaning up expired blocks: %v", err)
-		            }
-		        }
-		    }
+			for {
+				select {
+				case <-cleanupTicker.C:
+					if err := m.CleanupExpired(); err != nil {
+						m.logger.Printf("Error cleaning up expired blocks: %v", err)
+					}
+				}
+			}
 		}()
-	*/
+		m.logger.Printf("Periodic cleanup enabled with interval: %v", options.CleanupInterval)
+	} else {
+		m.logger.Printf("Periodic cleanup disabled. To enable, set CleanupEnabled to true in the configuration.")
+	}
 
 	return m, nil
 }
@@ -326,5 +332,65 @@ func (m *Middleware) CleanupExpired() error {
 		return err
 	}
 
+	return nil
+}
+
+// RestoreBlocks is a helper function that can be called from main to restore blocks after a system restart
+// Example usage in main:
+//
+//	if err := whoen.RestoreBlocks("blocked_ips.json", "linux"); err != nil {
+//	    log.Printf("Error restoring blocks: %v", err)
+//	}
+func RestoreBlocks(blockedIPsFile, systemType string) error {
+	// Create a storage instance
+	storage, err := storage.NewJSONStorage(blockedIPsFile)
+	if err != nil {
+		return err
+	}
+
+	// Get all blocked IPs from storage
+	blockedIPs, err := storage.GetBlockedIPs()
+	if err != nil {
+		return err
+	}
+
+	// Create a blocker instance
+	blockService := blocker.NewServiceWithSystemType(systemType)
+
+	// Restore blocks
+	now := time.Now()
+	restored := 0
+	skipped := 0
+
+	for _, status := range blockedIPs {
+		// Skip expired blocks
+		if !status.IsPermanent && now.After(status.BlockedUntil) {
+			skipped++
+			continue
+		}
+
+		// Reapply the block at OS level
+		if status.IsPermanent {
+			_, err := blockService.Block(status.IP, blocker.Ban, 0)
+			if err != nil {
+				return err
+			}
+		} else {
+			// Calculate remaining duration
+			remainingDuration := status.BlockedUntil.Sub(now)
+			if remainingDuration <= 0 {
+				skipped++
+				continue
+			}
+
+			_, err := blockService.Block(status.IP, blocker.Timeout, remainingDuration)
+			if err != nil {
+				return err
+			}
+		}
+		restored++
+	}
+
+	log.Printf("Restored %d IP blocks, skipped %d expired blocks", restored, skipped)
 	return nil
 }

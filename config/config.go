@@ -13,6 +13,8 @@ type Config struct {
 	TimeoutIncrease string        `json:"timeout_increase"`
 	LogFile         string        `json:"log_file"`
 	SystemType      string        `json:"system_type"`
+	CleanupEnabled  bool          `json:"cleanup_enabled"`
+	CleanupInterval time.Duration `json:"cleanup_interval"`
 }
 
 // DefaultConfig returns a configuration with sensible defaults
@@ -25,5 +27,7 @@ func DefaultConfig() Config {
 		TimeoutIncrease: "linear",       // Timeout increase type (linear / geometric)
 		LogFile:         "whoen.log",    // where the log file is located
 		SystemType:      "linux",        // System type (mac / linux / windows)
+		CleanupEnabled:  false,          // Disabled by default
+		CleanupInterval: 1 * time.Hour,  // Run cleanup every hour when enabled
 	}
 }

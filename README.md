@@ -38,11 +38,17 @@ go get github.com/headswim/whoen
 package main
 
 import (
+    "log"
     "net/http"
     "github.com/headswim/whoen/middleware"
 )
 
 func main() {
+    // Restore OS-level blocks from previous runs (IMPORTANT)
+    if err := middleware.RestoreBlocks("blocked_ips.json", "linux"); err != nil {
+        log.Printf("Error restoring blocks: %v", err)
+    }
+    
     // Initialize Whoen middleware with default configuration
     options := middleware.DefaultOptions()
     httpMiddleware, err := middleware.NewHTTP(options)
@@ -63,11 +69,17 @@ func main() {
 package main
 
 import (
+    "log"
     "github.com/gin-gonic/gin"
     "github.com/headswim/whoen/middleware"
 )
 
 func main() {
+    // Restore OS-level blocks from previous runs (IMPORTANT)
+    if err := middleware.RestoreBlocks("blocked_ips.json", "linux"); err != nil {
+        log.Printf("Error restoring blocks: %v", err)
+    }
+    
     router := gin.Default()
     
     // Initialize and use Whoen middleware
@@ -105,12 +117,18 @@ func main() {
 package main
 
 import (
+    "log"
     "net/http"
     "github.com/go-chi/chi/v5"
     "github.com/headswim/whoen/middleware"
 )
 
 func main() {
+    // Restore OS-level blocks from previous runs (IMPORTANT)
+    if err := middleware.RestoreBlocks("blocked_ips.json", "linux"); err != nil {
+        log.Printf("Error restoring blocks: %v", err)
+    }
+    
     router := chi.NewRouter()
     
     // Initialize and use Whoen middleware
@@ -136,7 +154,6 @@ func main() {
 ### Malicious Request Detection
 
 - Pattern-based detection of suspicious request paths
-- Configurable matching strategies (exact, prefix, pattern)
 - Extensible pattern library for common attack vectors
 
 ### Flexible Blocking Strategies
@@ -144,11 +161,13 @@ func main() {
 - Configurable grace period for first-time offenders
 - Temporary timeouts with linear or geometric increase
 - Permanent banning for persistent attackers
-- IP-based blocking with persistence across server restarts
+- IP-based blocking with OS-level firewall integration
+- Persistence of blocked IPs across application restarts
 
 ### Persistence and Monitoring
 
 - JSON-based storage for blocked IPs and timeout tracking
+- OS-level firewall integration (iptables, pfctl, netsh)
 - Detailed logging of detection and blocking events
 - Thread-safe operations for high-concurrency environments
 
@@ -171,6 +190,7 @@ options.TimeoutDuration = time.Hour * 12
 options.TimeoutIncrease = "geometric"
 options.Config.BlockedIPsFile = "custom_blocked_ips.json"
 options.Config.LogFile = "custom_whoen.log"
+options.Config.SystemType = "linux"  // Options: "linux", "mac", "windows"
 
 // Create middleware with custom options
 httpMiddleware, err := middleware.NewHTTP(options)
@@ -178,6 +198,20 @@ if err != nil {
     log.Fatalf("Error creating middleware: %v", err)
 }
 ```
+
+### Configuration Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `GracePeriod` | Number of malicious requests allowed before blocking | 1 |
+| `TimeoutEnabled` | Whether to use temporary blocks instead of permanent bans | true |
+| `TimeoutDuration` | Base duration for temporary blocks | 24 hours |
+| `TimeoutIncrease` | How timeout duration increases for repeat offenders ("linear" or "geometric") | "linear" |
+| `Config.BlockedIPsFile` | Path to the JSON file for storing blocked IPs | "blocked_ips.json" |
+| `Config.LogFile` | Path to the log file | "whoen.log" |
+| `Config.SystemType` | Operating system type for firewall commands ("linux", "mac", "windows") | "linux" |
+| `Config.CleanupEnabled` | Whether to enable periodic cleanup of expired blocks | false |
+| `Config.CleanupInterval` | Interval for periodic cleanup | 1 hour |
 
 ### Whitelisting IPs
 
@@ -197,6 +231,8 @@ var Whitelist = []string{
     "203.0.113.42",  // Trusted API client
 }
 ```
+
+**Note**: Changes to the whitelist require recompiling and restarting your application to take effect. The whitelist is loaded once during application startup.
 
 Whitelisted IPs will bypass all blocking mechanisms and their requests will be allowed even if they match malicious patterns.
 
@@ -230,35 +266,6 @@ This file stores information about blocked IPs, including their request counts, 
 ]
 ```
 
-## Project Structure
-
-```
-whoen/
-├── config/
-│   └── config.go       # Configuration handling (including defaults)
-├── storage/
-│   ├── storage.go      # Storage interface
-│   └── json.go         # JSON implementation
-├── middleware/
-│   ├── middleware.go   # Core middleware logic + interface
-│   ├── http.go         # Standard http adapter
-│   ├── chi.go          # Chi adapter
-│   └── gin.go          # Gin adapter
-├── matcher/
-│   ├── matcher.go      # Path matching interface
-│   ├── patterns.go     # Pattern definitions to match
-│   └── service.go      # Path matching implementation
-├── blocker/
-│   ├── blocker.go      # IP blocking interface
-│   └── service.go      # Blocking implementation
-├── examples/
-│   ├── http/           # Standard http example
-│   ├── gin/            # Gin example
-│   └── chi/            # Chi example
-├── go.mod              # Module definition
-└── README.md           # Documentation
-```
-
 ## Examples
 
 Complete examples for each supported framework can be found in the `examples/` directory:
@@ -283,6 +290,32 @@ if err != nil {
     log.Fatalf("Error creating middleware: %v", err)
 }
 ```
+
+### OS-Level Block Persistence
+
+Whoen uses OS-level firewall commands (iptables on Linux, pfctl on macOS, netsh on Windows) to block malicious IPs. These blocks are stored in the JSON file for persistence, but the OS-level firewall rules themselves do not persist across system restarts.
+
+**IMPORTANT**: To ensure that blocked IPs remain blocked after your application restarts, you must call the `RestoreBlocks` function at the beginning of your `main` function:
+
+```go
+func main() {
+    // Restore OS-level blocks from previous runs
+    // Parameters: JSON file path, system type ("linux", "mac", or "windows")
+    if err := middleware.RestoreBlocks("blocked_ips.json", "linux"); err != nil {
+        log.Printf("Error restoring blocks: %v", err)
+    }
+    
+    // Rest of your application initialization...
+}
+```
+
+This function:
+- Reads the blocked IPs from your JSON storage file
+- Reapplies the OS-level firewall rules for all non-expired blocks
+- Skips any blocks that have already expired
+- Logs the number of restored and skipped blocks
+
+**Note**: The OS-level blocking commands require sudo/administrator privileges. Make sure your application has the necessary permissions to execute these commands.
 
 ### Automatic Cleanup of Expired Blocks
 
@@ -324,7 +357,7 @@ var Patterns = []string{
     "/wp-login.php",
     "/phpmyadmin",
     // ... more patterns
-    
+
     // Add your custom patterns here
     "/your-custom-pattern",
     "/another-pattern",
