@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"path/filepath"
 	"time"
 )
@@ -22,7 +21,8 @@ type Config struct {
 
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() Config {
-	// Try to use a system-wide directory for storage if possible
+	// Use the current directory for storage
+	// Make sure the application has write permissions to this directory
 	storageDir := getDefaultStorageDir()
 
 	return Config{
@@ -71,33 +71,8 @@ func ValidateConfig(cfg *Config) {
 
 // getDefaultStorageDir returns the default directory for storing Whoen data
 func getDefaultStorageDir() string {
-	// Try to use a system-wide directory if possible
-	var baseDir string
-
-	// Check if we can write to /var/lib/whoen (Linux/Mac)
-	if _, err := os.Stat("/var/lib"); err == nil {
-		baseDir = "/var/lib/whoen"
-		// Try to create the directory
-		if err := os.MkdirAll(baseDir, 0755); err == nil {
-			// Test if we can write to it
-			testFile := filepath.Join(baseDir, ".test")
-			if f, err := os.Create(testFile); err == nil {
-				f.Close()
-				os.Remove(testFile)
-				return baseDir
-			}
-		}
-	}
-
-	// Check if we can use the user's home directory
-	if homeDir, err := os.UserHomeDir(); err == nil {
-		baseDir = filepath.Join(homeDir, ".whoen")
-		if err := os.MkdirAll(baseDir, 0755); err == nil {
-			return baseDir
-		}
-	}
-
-	// Fall back to the current directory
+	// Use the current directory as the default storage location
+	// This is the most reliable option and requires no special permissions
 	return "."
 }
 
