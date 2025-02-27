@@ -275,6 +275,33 @@ func (s *JSONStorage) GetAllRequestCounts() (map[string]RequestCounter, error) {
 func (s *JSONStorage) Save() error {
 	log.Printf("[whoen-debug] Starting save operation to %s and %s", s.blockedIPsFile, s.requestCountsFile)
 
+	// First check for expired blocks and clean them up
+	now := time.Now()
+	for ip, status := range s.blockedIPs {
+		if !status.IsPermanent && now.After(status.BlockedUntil) {
+			delete(s.blockedIPs, ip)
+			log.Printf("[whoen-debug] Removed expired block for IP %s during save", ip)
+		}
+	}
+
+	// Check and clean up old request counts
+	staleThreshold := now.Add(-24 * time.Hour) // Requests older than 24h are considered stale
+	for ip, counter := range s.requestCounts {
+		// If last request was more than 24h ago, reset the count
+		if counter.LastSeen.Before(staleThreshold) {
+			counter.Count = 0
+			counter.TimeoutCount = 0
+			s.requestCounts[ip] = counter
+			log.Printf("[whoen-debug] Reset counts for IP %s due to inactivity", ip)
+
+			// If this IP is blocked, remove the block since requests are stale
+			if _, exists := s.blockedIPs[ip]; exists {
+				delete(s.blockedIPs, ip)
+				log.Printf("[whoen-debug] Removed block for IP %s due to inactivity", ip)
+			}
+		}
+	}
+
 	// Create directory if it doesn't exist
 	dir := filepath.Dir(s.blockedIPsFile)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -304,7 +331,10 @@ func (s *JSONStorage) Save() error {
 	// Save request counts
 	requestCountsList := make([]RequestCounter, 0, len(s.requestCounts))
 	for _, counter := range s.requestCounts {
-		requestCountsList = append(requestCountsList, counter)
+		// Only save non-zero counts that aren't stale
+		if counter.Count > 0 && !counter.LastSeen.Before(staleThreshold) {
+			requestCountsList = append(requestCountsList, counter)
+		}
 	}
 
 	requestCountsData, err := json.MarshalIndent(requestCountsList, "", "  ")
