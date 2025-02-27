@@ -41,13 +41,42 @@ func NewJSONStorage(blockedIPsFile string) (*JSONStorage, error) {
 		return nil, err
 	}
 
-	// Check existing request counts and block IPs over threshold
+	// FIRST: Clean up expired blocks and stale requests
+	now := time.Now()
+	staleThreshold := now.Add(-24 * time.Hour)
+
+	// Clean up expired blocks
+	for ip, status := range storage.blockedIPs {
+		if !status.IsPermanent && now.After(status.BlockedUntil) {
+			delete(storage.blockedIPs, ip)
+			log.Printf("[whoen-debug] Removed expired block for IP %s during initialization", ip)
+		}
+	}
+
+	// Clean up stale requests
+	for ip, counter := range storage.requestCounts {
+		if counter.LastSeen.Before(staleThreshold) {
+			delete(storage.requestCounts, ip) // Remove entirely instead of just resetting
+			log.Printf("[whoen-debug] Removed stale request count for IP %s (last seen: %s)", ip, counter.LastSeen)
+		}
+	}
+
+	// Save the cleaned up state
+	if err := storage.Save(); err != nil {
+		log.Printf("[whoen-error] Failed to save cleaned up state: %v", err)
+		return nil, err
+	}
+
+	// SECOND: Now check remaining active request counts for blocking
 	for ip, counter := range storage.requestCounts {
 		if counter.Count >= 3 { // Using default threshold of 3
-			log.Printf("[whoen-debug] Found existing IP %s over threshold (count: %d), blocking", ip, counter.Count)
-			until := time.Now().Add(24 * time.Hour) // Using default timeout
-			if err := storage.BlockIP(ip, until, false, counter.LastPath); err != nil {
-				log.Printf("[whoen-error] Failed to block IP %s: %v", ip, err)
+			// Only block if IP isn't already blocked
+			if _, exists := storage.blockedIPs[ip]; !exists {
+				log.Printf("[whoen-debug] Found active IP %s over threshold (count: %d), blocking", ip, counter.Count)
+				until := time.Now().Add(24 * time.Hour) // Using default timeout
+				if err := storage.BlockIP(ip, until, false, counter.LastPath); err != nil {
+					log.Printf("[whoen-error] Failed to block IP %s: %v", ip, err)
+				}
 			}
 		}
 	}
