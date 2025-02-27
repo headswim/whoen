@@ -3,7 +3,6 @@ package storage
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,11 +13,7 @@ import (
 type JSONStorage struct {
 	blockedIPsFile    string
 	requestCountsFile string
-	blockedIPs        map[string]BlockStatus
-	requestCounts     map[string]RequestCounter
 	mutex             sync.RWMutex
-	saveTicker        *time.Ticker
-	done              chan bool
 }
 
 // NewJSONStorage creates a new JSONStorage instance
@@ -30,109 +25,102 @@ func NewJSONStorage(blockedIPsFile string) (*JSONStorage, error) {
 	storage := &JSONStorage{
 		blockedIPsFile:    blockedIPsFile,
 		requestCountsFile: requestCountsFile,
-		blockedIPs:        make(map[string]BlockStatus),
-		requestCounts:     make(map[string]RequestCounter),
-		done:              make(chan bool),
 	}
 
-	// Load existing data
-	err := storage.Load()
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create directory %s: %v", dir, err)
 	}
 
-	// FIRST: Clean up expired blocks and stale requests
-	now := time.Now()
-	staleThreshold := now.Add(-24 * time.Hour)
-
-	// Clean up expired blocks
-	for ip, status := range storage.blockedIPs {
-		if !status.IsPermanent && now.After(status.BlockedUntil) {
-			delete(storage.blockedIPs, ip)
-			log.Printf("[whoen-debug] Removed expired block for IP %s during initialization", ip)
-		}
-	}
-
-	// Clean up stale requests
-	for ip, counter := range storage.requestCounts {
-		if counter.LastSeen.Before(staleThreshold) {
-			delete(storage.requestCounts, ip) // Remove entirely instead of just resetting
-			log.Printf("[whoen-debug] Removed stale request count for IP %s (last seen: %s)", ip, counter.LastSeen)
-		}
-	}
-
-	// Save the cleaned up state
-	if err := storage.Save(); err != nil {
-		log.Printf("[whoen-error] Failed to save cleaned up state: %v", err)
-		return nil, err
-	}
-
-	// SECOND: Now check remaining active request counts for blocking
-	for ip, counter := range storage.requestCounts {
-		if counter.Count >= 3 { // Using default threshold of 3
-			// Only block if IP isn't already blocked
-			if _, exists := storage.blockedIPs[ip]; !exists {
-				log.Printf("[whoen-debug] Found active IP %s over threshold (count: %d), blocking", ip, counter.Count)
-				until := time.Now().Add(24 * time.Hour) // Using default timeout
-				if err := storage.BlockIP(ip, until, false, counter.LastPath); err != nil {
-					log.Printf("[whoen-error] Failed to block IP %s: %v", ip, err)
-				}
+	// Create files if they don't exist
+	for _, file := range []string{blockedIPsFile, requestCountsFile} {
+		if _, err := os.Stat(file); os.IsNotExist(err) {
+			if err := os.WriteFile(file, []byte("[]"), 0644); err != nil {
+				return nil, fmt.Errorf("failed to create file %s: %v", file, err)
 			}
 		}
 	}
-
-	// Start periodic saving
-	storage.saveTicker = time.NewTicker(5 * time.Minute)
-	go func() {
-		for {
-			select {
-			case <-storage.saveTicker.C:
-				log.Printf("[whoen-debug] Running periodic save")
-				if err := storage.Save(); err != nil {
-					log.Printf("[whoen-error] Error in periodic save: %v", err)
-				}
-			case <-storage.done:
-				return
-			}
-		}
-	}()
 
 	return storage, nil
+}
+
+// readBlockedIPs reads the blocked IPs from file
+func (s *JSONStorage) readBlockedIPs() ([]BlockStatus, error) {
+	data, err := os.ReadFile(s.blockedIPsFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []BlockStatus{}, nil
+		}
+		return nil, err
+	}
+
+	var blockedIPs []BlockStatus
+	if err := json.Unmarshal(data, &blockedIPs); err != nil {
+		return nil, err
+	}
+
+	return blockedIPs, nil
+}
+
+// writeBlockedIPs writes the blocked IPs to file
+func (s *JSONStorage) writeBlockedIPs(blockedIPs []BlockStatus) error {
+	data, err := json.MarshalIndent(blockedIPs, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(s.blockedIPsFile, data, 0644)
+}
+
+// readRequestCounts reads the request counts from file
+func (s *JSONStorage) readRequestCounts() ([]RequestCounter, error) {
+	data, err := os.ReadFile(s.requestCountsFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []RequestCounter{}, nil
+		}
+		return nil, err
+	}
+
+	var requestCounts []RequestCounter
+	if err := json.Unmarshal(data, &requestCounts); err != nil {
+		return nil, err
+	}
+
+	return requestCounts, nil
+}
+
+// writeRequestCounts writes the request counts to file
+func (s *JSONStorage) writeRequestCounts(requestCounts []RequestCounter) error {
+	data, err := json.MarshalIndent(requestCounts, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(s.requestCountsFile, data, 0644)
 }
 
 // IsIPBlocked checks if an IP is blocked
 func (s *JSONStorage) IsIPBlocked(ip string) (bool, *BlockStatus, error) {
 	s.mutex.RLock()
+	defer s.mutex.RUnlock()
 
-	status, exists := s.blockedIPs[ip]
-	if !exists {
-		s.mutex.RUnlock()
-		return false, nil, nil
+	blockedIPs, err := s.readBlockedIPs()
+	if err != nil {
+		return false, nil, err
 	}
 
-	// Check if the block has expired
-	if !status.IsPermanent && time.Now().After(status.BlockedUntil) {
-		// Need to switch to a write lock to remove the expired block
-		s.mutex.RUnlock()
-		s.mutex.Lock()
-		defer s.mutex.Unlock()
-
-		// Check again after acquiring the write lock
-		status, exists = s.blockedIPs[ip]
-		if !exists {
-			return false, nil, nil
+	now := time.Now()
+	for _, status := range blockedIPs {
+		if status.IP == ip {
+			if !status.IsPermanent && now.After(status.BlockedUntil) {
+				return false, &status, nil
+			}
+			return true, &status, nil
 		}
-
-		// Check expiration again after acquiring the write lock
-		if !status.IsPermanent && time.Now().After(status.BlockedUntil) {
-			delete(s.blockedIPs, ip)
-		}
-
-		return false, &status, nil
 	}
 
-	s.mutex.RUnlock()
-	return true, &status, nil
+	return false, nil, nil
 }
 
 // BlockIP blocks an IP
@@ -140,13 +128,25 @@ func (s *JSONStorage) BlockIP(ip string, until time.Time, isPermanent bool, path
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	status, exists := s.blockedIPs[ip]
-	if exists {
-		status.BlockedUntil = until
-		status.IsPermanent = isPermanent
-		status.LastRequestPath = path
-	} else {
-		status = BlockStatus{
+	blockedIPs, err := s.readBlockedIPs()
+	if err != nil {
+		return err
+	}
+
+	// Update or add block status
+	found := false
+	for i, status := range blockedIPs {
+		if status.IP == ip {
+			blockedIPs[i].BlockedUntil = until
+			blockedIPs[i].IsPermanent = isPermanent
+			blockedIPs[i].LastRequestPath = path
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		blockedIPs = append(blockedIPs, BlockStatus{
 			IP:              ip,
 			BlockedAt:       time.Now(),
 			BlockedUntil:    until,
@@ -154,11 +154,10 @@ func (s *JSONStorage) BlockIP(ip string, until time.Time, isPermanent bool, path
 			TimeoutCount:    0,
 			IsPermanent:     isPermanent,
 			LastRequestPath: path,
-		}
+		})
 	}
 
-	s.blockedIPs[ip] = status
-	return s.Save()
+	return s.writeBlockedIPs(blockedIPs)
 }
 
 // UnblockIP unblocks an IP
@@ -166,8 +165,20 @@ func (s *JSONStorage) UnblockIP(ip string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	delete(s.blockedIPs, ip)
-	return s.Save()
+	blockedIPs, err := s.readBlockedIPs()
+	if err != nil {
+		return err
+	}
+
+	// Remove IP from blocked list
+	newBlockedIPs := make([]BlockStatus, 0, len(blockedIPs))
+	for _, status := range blockedIPs {
+		if status.IP != ip {
+			newBlockedIPs = append(newBlockedIPs, status)
+		}
+	}
+
+	return s.writeBlockedIPs(newBlockedIPs)
 }
 
 // GetBlockedIPs returns all blocked IPs
@@ -175,12 +186,7 @@ func (s *JSONStorage) GetBlockedIPs() ([]BlockStatus, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
-	result := make([]BlockStatus, 0, len(s.blockedIPs))
-	for _, status := range s.blockedIPs {
-		result = append(result, status)
-	}
-
-	return result, nil
+	return s.readBlockedIPs()
 }
 
 // IncrementRequestCount increments the request count for an IP
@@ -188,33 +194,52 @@ func (s *JSONStorage) IncrementRequestCount(ip string, path string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	// Update the request counter
-	counter, exists := s.requestCounts[ip]
-	if exists {
-		counter.Count++
-		counter.LastSeen = time.Now()
-		counter.LastPath = path
-	} else {
-		counter = RequestCounter{
-			IP:        ip,
-			Count:     1,
-			FirstSeen: time.Now(),
-			LastSeen:  time.Now(),
-			LastPath:  path,
+	requestCounts, err := s.readRequestCounts()
+	if err != nil {
+		return err
+	}
+
+	// Update request counts
+	now := time.Now()
+	found := false
+	for i, counter := range requestCounts {
+		if counter.IP == ip {
+			requestCounts[i].Count++
+			requestCounts[i].LastSeen = now
+			requestCounts[i].LastPath = path
+			found = true
+			break
 		}
 	}
-	s.requestCounts[ip] = counter
 
-	// Also update the blocked IP status if it exists
-	status, exists := s.blockedIPs[ip]
-	if exists {
-		status.RequestCount++
-		status.LastRequestPath = path
-		s.blockedIPs[ip] = status
+	if !found {
+		requestCounts = append(requestCounts, RequestCounter{
+			IP:        ip,
+			Count:     1,
+			FirstSeen: now,
+			LastSeen:  now,
+			LastPath:  path,
+		})
 	}
 
-	// Save changes to disk immediately
-	return s.Save()
+	// Also update blocked IP status if it exists
+	blockedIPs, err := s.readBlockedIPs()
+	if err != nil {
+		return err
+	}
+
+	for i, status := range blockedIPs {
+		if status.IP == ip {
+			blockedIPs[i].RequestCount++
+			blockedIPs[i].LastRequestPath = path
+			if err := s.writeBlockedIPs(blockedIPs); err != nil {
+				return err
+			}
+			break
+		}
+	}
+
+	return s.writeRequestCounts(requestCounts)
 }
 
 // IncrementTimeoutCount increments the timeout count for an IP
@@ -222,22 +247,36 @@ func (s *JSONStorage) IncrementTimeoutCount(ip string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	// Update the request counter
-	counter, exists := s.requestCounts[ip]
-	if exists {
-		counter.TimeoutCount++
-		s.requestCounts[ip] = counter
+	requestCounts, err := s.readRequestCounts()
+	if err != nil {
+		return err
 	}
 
-	// Also update the blocked IP status if it exists
-	status, exists := s.blockedIPs[ip]
-	if exists {
-		status.TimeoutCount++
-		s.blockedIPs[ip] = status
+	// Update request counts
+	for i, counter := range requestCounts {
+		if counter.IP == ip {
+			requestCounts[i].TimeoutCount++
+			if err := s.writeRequestCounts(requestCounts); err != nil {
+				return err
+			}
+			break
+		}
 	}
 
-	// Save changes to disk immediately
-	return s.Save()
+	// Also update blocked IP status if it exists
+	blockedIPs, err := s.readBlockedIPs()
+	if err != nil {
+		return err
+	}
+
+	for i, status := range blockedIPs {
+		if status.IP == ip {
+			blockedIPs[i].TimeoutCount++
+			return s.writeBlockedIPs(blockedIPs)
+		}
+	}
+
+	return nil
 }
 
 // GetRequestCount gets the request count for an IP
@@ -245,12 +284,18 @@ func (s *JSONStorage) GetRequestCount(ip string) (int, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
-	counter, exists := s.requestCounts[ip]
-	if !exists {
-		return 0, nil
+	requestCounts, err := s.readRequestCounts()
+	if err != nil {
+		return 0, err
 	}
 
-	return counter.Count, nil
+	for _, counter := range requestCounts {
+		if counter.IP == ip {
+			return counter.Count, nil
+		}
+	}
+
+	return 0, nil
 }
 
 // SetRequestCount sets the request count for an IP
@@ -258,23 +303,34 @@ func (s *JSONStorage) SetRequestCount(ip string, count int, path string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	counter, exists := s.requestCounts[ip]
-	if exists {
-		counter.Count = count
-		counter.LastSeen = time.Now()
-		counter.LastPath = path
-	} else {
-		counter = RequestCounter{
-			IP:        ip,
-			Count:     count,
-			FirstSeen: time.Now(),
-			LastSeen:  time.Now(),
-			LastPath:  path,
+	requestCounts, err := s.readRequestCounts()
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	found := false
+	for i, counter := range requestCounts {
+		if counter.IP == ip {
+			requestCounts[i].Count = count
+			requestCounts[i].LastSeen = now
+			requestCounts[i].LastPath = path
+			found = true
+			break
 		}
 	}
-	s.requestCounts[ip] = counter
 
-	return s.Save()
+	if !found {
+		requestCounts = append(requestCounts, RequestCounter{
+			IP:        ip,
+			Count:     count,
+			FirstSeen: now,
+			LastSeen:  now,
+			LastPath:  path,
+		})
+	}
+
+	return s.writeRequestCounts(requestCounts)
 }
 
 // ResetRequestCount resets the request count for an IP
@@ -282,8 +338,19 @@ func (s *JSONStorage) ResetRequestCount(ip string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	delete(s.requestCounts, ip)
-	return s.Save()
+	requestCounts, err := s.readRequestCounts()
+	if err != nil {
+		return err
+	}
+
+	newRequestCounts := make([]RequestCounter, 0, len(requestCounts))
+	for _, counter := range requestCounts {
+		if counter.IP != ip {
+			newRequestCounts = append(newRequestCounts, counter)
+		}
+	}
+
+	return s.writeRequestCounts(newRequestCounts)
 }
 
 // GetAllRequestCounts returns all request counts
@@ -291,161 +358,17 @@ func (s *JSONStorage) GetAllRequestCounts() (map[string]RequestCounter, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
-	// Create a copy to avoid race conditions
-	result := make(map[string]RequestCounter, len(s.requestCounts))
-	for ip, counter := range s.requestCounts {
-		result[ip] = counter
+	requestCounts, err := s.readRequestCounts()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]RequestCounter, len(requestCounts))
+	for _, counter := range requestCounts {
+		result[counter.IP] = counter
 	}
 
 	return result, nil
-}
-
-// Save saves the data to disk
-func (s *JSONStorage) Save() error {
-	log.Printf("[whoen-debug] Starting save operation to %s and %s", s.blockedIPsFile, s.requestCountsFile)
-
-	// First check for expired blocks and clean them up
-	now := time.Now()
-	for ip, status := range s.blockedIPs {
-		if !status.IsPermanent && now.After(status.BlockedUntil) {
-			delete(s.blockedIPs, ip)
-			log.Printf("[whoen-debug] Removed expired block for IP %s during save", ip)
-		}
-	}
-
-	// Check and clean up old request counts
-	staleThreshold := now.Add(-24 * time.Hour) // Requests older than 24h are considered stale
-	for ip, counter := range s.requestCounts {
-		// If last request was more than 24h ago, reset the count
-		if counter.LastSeen.Before(staleThreshold) {
-			counter.Count = 0
-			counter.TimeoutCount = 0
-			s.requestCounts[ip] = counter
-			log.Printf("[whoen-debug] Reset counts for IP %s due to inactivity", ip)
-
-			// If this IP is blocked, remove the block since requests are stale
-			if _, exists := s.blockedIPs[ip]; exists {
-				delete(s.blockedIPs, ip)
-				log.Printf("[whoen-debug] Removed block for IP %s due to inactivity", ip)
-			}
-		}
-	}
-
-	// Create directory if it doesn't exist
-	dir := filepath.Dir(s.blockedIPsFile)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		log.Printf("[whoen-error] Failed to create directory %s: %v", dir, err)
-		return fmt.Errorf("failed to create directory %s: %v", dir, err)
-	}
-
-	// Save blocked IPs
-	blockedIPsList := make([]BlockStatus, 0, len(s.blockedIPs))
-	for _, status := range s.blockedIPs {
-		blockedIPsList = append(blockedIPsList, status)
-	}
-
-	blockedIPsData, err := json.MarshalIndent(blockedIPsList, "", "  ")
-	if err != nil {
-		log.Printf("[whoen-error] Failed to marshal blocked IPs: %v", err)
-		return fmt.Errorf("failed to marshal blocked IPs: %v", err)
-	}
-	log.Printf("[whoen-debug] Marshaled %d blocked IPs", len(blockedIPsList))
-
-	if err := os.WriteFile(s.blockedIPsFile, blockedIPsData, 0644); err != nil {
-		log.Printf("[whoen-error] Failed to write blocked IPs file: %v", err)
-		return fmt.Errorf("failed to write blocked IPs file: %v", err)
-	}
-	log.Printf("[whoen-debug] Successfully wrote blocked IPs to %s", s.blockedIPsFile)
-
-	// Save request counts
-	requestCountsList := make([]RequestCounter, 0, len(s.requestCounts))
-	for _, counter := range s.requestCounts {
-		// Only save non-zero counts that aren't stale
-		if counter.Count > 0 && !counter.LastSeen.Before(staleThreshold) {
-			requestCountsList = append(requestCountsList, counter)
-		}
-	}
-
-	requestCountsData, err := json.MarshalIndent(requestCountsList, "", "  ")
-	if err != nil {
-		log.Printf("[whoen-error] Failed to marshal request counts: %v", err)
-		return fmt.Errorf("failed to marshal request counts: %v", err)
-	}
-	log.Printf("[whoen-debug] Marshaled %d request counts", len(requestCountsList))
-
-	if err := os.WriteFile(s.requestCountsFile, requestCountsData, 0644); err != nil {
-		log.Printf("[whoen-error] Failed to write request counts file: %v", err)
-		return fmt.Errorf("failed to write request counts file: %v", err)
-	}
-	log.Printf("[whoen-debug] Successfully wrote request counts to %s", s.requestCountsFile)
-
-	log.Printf("[whoen-debug] Save operation completed successfully")
-	return nil
-}
-
-// Load loads the data from disk
-func (s *JSONStorage) Load() error {
-	log.Printf("[whoen-debug] Starting load operation from %s and %s", s.blockedIPsFile, s.requestCountsFile)
-
-	// Initialize maps if they don't exist
-	if s.blockedIPs == nil {
-		s.blockedIPs = make(map[string]BlockStatus)
-	}
-	if s.requestCounts == nil {
-		s.requestCounts = make(map[string]RequestCounter)
-	}
-
-	// Load blocked IPs
-	blockedIPsData, err := os.ReadFile(s.blockedIPsFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("[whoen-debug] Blocked IPs file doesn't exist, starting with empty map")
-		} else {
-			log.Printf("[whoen-error] Error reading blocked IPs file: %v", err)
-			return fmt.Errorf("error reading blocked IPs file: %v", err)
-		}
-	} else {
-		var blockedIPsList []BlockStatus
-		if err := json.Unmarshal(blockedIPsData, &blockedIPsList); err != nil {
-			log.Printf("[whoen-error] Error unmarshaling blocked IPs: %v", err)
-			return fmt.Errorf("error unmarshaling blocked IPs: %v", err)
-		}
-		log.Printf("[whoen-debug] Loaded %d blocked IPs from file", len(blockedIPsList))
-		for _, status := range blockedIPsList {
-			s.blockedIPs[status.IP] = status
-		}
-	}
-
-	// Load request counts
-	requestCountsData, err := os.ReadFile(s.requestCountsFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("[whoen-debug] Request counts file doesn't exist, starting with empty map")
-		} else {
-			log.Printf("[whoen-error] Error reading request counts file: %v", err)
-			return fmt.Errorf("error reading request counts file: %v", err)
-		}
-	} else {
-		var requestCountsList []RequestCounter
-		if err := json.Unmarshal(requestCountsData, &requestCountsList); err != nil {
-			log.Printf("[whoen-error] Error unmarshaling request counts: %v", err)
-			return fmt.Errorf("error unmarshaling request counts: %v", err)
-		}
-		log.Printf("[whoen-debug] Loaded %d request counts from file", len(requestCountsList))
-		for _, counter := range requestCountsList {
-			s.requestCounts[counter.IP] = counter
-		}
-	}
-
-	log.Printf("[whoen-debug] Load operation completed successfully")
-	return nil
-}
-
-// Close closes the storage
-func (s *JSONStorage) Close() error {
-	s.saveTicker.Stop()
-	s.done <- true
-	return s.Save()
 }
 
 // CleanupExpired removes expired blocks from storage
@@ -453,12 +376,54 @@ func (s *JSONStorage) CleanupExpired() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	blockedIPs, err := s.readBlockedIPs()
+	if err != nil {
+		return err
+	}
+
 	now := time.Now()
-	for ip, status := range s.blockedIPs {
+	staleThreshold := now.Add(-24 * time.Hour)
+
+	// Clean up expired blocks
+	newBlockedIPs := make([]BlockStatus, 0, len(blockedIPs))
+	for _, status := range blockedIPs {
 		if !status.IsPermanent && now.After(status.BlockedUntil) {
-			delete(s.blockedIPs, ip)
+			continue
+		}
+		newBlockedIPs = append(newBlockedIPs, status)
+	}
+
+	if err := s.writeBlockedIPs(newBlockedIPs); err != nil {
+		return err
+	}
+
+	// Clean up stale request counts
+	requestCounts, err := s.readRequestCounts()
+	if err != nil {
+		return err
+	}
+
+	newRequestCounts := make([]RequestCounter, 0, len(requestCounts))
+	for _, counter := range requestCounts {
+		if !counter.LastSeen.Before(staleThreshold) {
+			newRequestCounts = append(newRequestCounts, counter)
 		}
 	}
 
-	return s.Save()
+	return s.writeRequestCounts(newRequestCounts)
+}
+
+// Save is a no-op since we save immediately after each operation
+func (s *JSONStorage) Save() error {
+	return nil
+}
+
+// Load is a no-op since we load for each operation
+func (s *JSONStorage) Load() error {
+	return nil
+}
+
+// Close is a no-op since we don't maintain any in-memory state
+func (s *JSONStorage) Close() error {
+	return nil
 }

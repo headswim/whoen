@@ -16,6 +16,7 @@ import (
 )
 
 // New creates a new instance of the whoen middleware with default configuration
+
 func New() (*middleware.Middleware, error) {
 	return NewWithConfig(config.DefaultConfig())
 }
@@ -71,6 +72,7 @@ func NewWithCustomSettings(gracePeriod int, timeoutEnabled bool, timeoutDuration
 
 	return NewWithConfig(cfg)
 }
+// this whole thing seems duplicated ^
 
 // getSystemType returns the appropriate system type based on runtime.GOOS
 func getSystemType() string {
@@ -90,6 +92,7 @@ func RestoreBlocks(blockedIPsFile string) error {
 	systemType := getSystemType()
 	return middleware.RestoreBlocks(blockedIPsFile, systemType)
 }
+// Should we have New call this ^ ?
 
 // SetWhitelist allows setting a custom whitelist of IPs that should never be blocked
 func SetWhitelist(ips []string) {
