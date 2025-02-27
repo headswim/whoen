@@ -3,25 +3,34 @@ package storage
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
 
 // JSONStorage implements the Storage interface using JSON files
 type JSONStorage struct {
-	blockedIPsFile string
-	blockedIPs     map[string]BlockStatus
-	mutex          sync.RWMutex
-	saveTicker     *time.Ticker
-	done           chan bool
+	blockedIPsFile    string
+	requestCountsFile string
+	blockedIPs        map[string]BlockStatus
+	requestCounts     map[string]RequestCounter
+	mutex             sync.RWMutex
+	saveTicker        *time.Ticker
+	done              chan bool
 }
 
 // NewJSONStorage creates a new JSONStorage instance
 func NewJSONStorage(blockedIPsFile string) (*JSONStorage, error) {
+	// Create the request counts file in the same directory as the blocked IPs file
+	dir := filepath.Dir(blockedIPsFile)
+	requestCountsFile := filepath.Join(dir, "request_counts.json")
+
 	storage := &JSONStorage{
-		blockedIPsFile: blockedIPsFile,
-		blockedIPs:     make(map[string]BlockStatus),
-		done:           make(chan bool),
+		blockedIPsFile:    blockedIPsFile,
+		requestCountsFile: requestCountsFile,
+		blockedIPs:        make(map[string]BlockStatus),
+		requestCounts:     make(map[string]RequestCounter),
+		done:              make(chan bool),
 	}
 
 	// Load existing data
@@ -134,21 +143,33 @@ func (s *JSONStorage) IncrementRequestCount(ip string, path string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	// Update the request counter
+	counter, exists := s.requestCounts[ip]
+	if exists {
+		counter.Count++
+		counter.LastSeen = time.Now()
+		counter.LastPath = path
+	} else {
+		counter = RequestCounter{
+			IP:        ip,
+			Count:     1,
+			FirstSeen: time.Now(),
+			LastSeen:  time.Now(),
+			LastPath:  path,
+		}
+	}
+	s.requestCounts[ip] = counter
+
+	// Also update the blocked IP status if it exists
 	status, exists := s.blockedIPs[ip]
 	if exists {
 		status.RequestCount++
 		status.LastRequestPath = path
 		s.blockedIPs[ip] = status
-	} else {
-		s.blockedIPs[ip] = BlockStatus{
-			IP:              ip,
-			BlockedAt:       time.Now(),
-			RequestCount:    1,
-			LastRequestPath: path,
-		}
 	}
 
-	return nil
+	// Save changes to disk immediately
+	return s.Save()
 }
 
 // IncrementTimeoutCount increments the timeout count for an IP
@@ -156,13 +177,82 @@ func (s *JSONStorage) IncrementTimeoutCount(ip string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	// Update the request counter
+	counter, exists := s.requestCounts[ip]
+	if exists {
+		counter.TimeoutCount++
+		s.requestCounts[ip] = counter
+	}
+
+	// Also update the blocked IP status if it exists
 	status, exists := s.blockedIPs[ip]
 	if exists {
 		status.TimeoutCount++
 		s.blockedIPs[ip] = status
 	}
 
-	return nil
+	// Save changes to disk immediately
+	return s.Save()
+}
+
+// GetRequestCount gets the request count for an IP
+func (s *JSONStorage) GetRequestCount(ip string) (int, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	counter, exists := s.requestCounts[ip]
+	if !exists {
+		return 0, nil
+	}
+
+	return counter.Count, nil
+}
+
+// SetRequestCount sets the request count for an IP
+func (s *JSONStorage) SetRequestCount(ip string, count int, path string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	counter, exists := s.requestCounts[ip]
+	if exists {
+		counter.Count = count
+		counter.LastSeen = time.Now()
+		counter.LastPath = path
+	} else {
+		counter = RequestCounter{
+			IP:        ip,
+			Count:     count,
+			FirstSeen: time.Now(),
+			LastSeen:  time.Now(),
+			LastPath:  path,
+		}
+	}
+	s.requestCounts[ip] = counter
+
+	return s.Save()
+}
+
+// ResetRequestCount resets the request count for an IP
+func (s *JSONStorage) ResetRequestCount(ip string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	delete(s.requestCounts, ip)
+	return s.Save()
+}
+
+// GetAllRequestCounts returns all request counts
+func (s *JSONStorage) GetAllRequestCounts() (map[string]RequestCounter, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	// Create a copy to avoid race conditions
+	result := make(map[string]RequestCounter, len(s.requestCounts))
+	for ip, counter := range s.requestCounts {
+		result[ip] = counter
+	}
+
+	return result, nil
 }
 
 // Save saves the data to disk
@@ -178,7 +268,22 @@ func (s *JSONStorage) Save() error {
 		return err
 	}
 
-	return os.WriteFile(s.blockedIPsFile, blockedIPsData, 0644)
+	if err := os.WriteFile(s.blockedIPsFile, blockedIPsData, 0644); err != nil {
+		return err
+	}
+
+	// Save request counts
+	requestCountsList := make([]RequestCounter, 0, len(s.requestCounts))
+	for _, counter := range s.requestCounts {
+		requestCountsList = append(requestCountsList, counter)
+	}
+
+	requestCountsData, err := json.MarshalIndent(requestCountsList, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(s.requestCountsFile, requestCountsData, 0644)
 }
 
 // Load loads the data from disk
@@ -202,6 +307,28 @@ func (s *JSONStorage) Load() error {
 		s.blockedIPs = make(map[string]BlockStatus, len(blockedIPsList))
 		for _, status := range blockedIPsList {
 			s.blockedIPs[status.IP] = status
+		}
+	}
+
+	// Load request counts
+	requestCountsData, err := os.ReadFile(s.requestCountsFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// File doesn't exist, initialize with empty data
+			s.requestCounts = make(map[string]RequestCounter)
+		} else {
+			return err
+		}
+	} else {
+		var requestCountsList []RequestCounter
+		err = json.Unmarshal(requestCountsData, &requestCountsList)
+		if err != nil {
+			return err
+		}
+
+		s.requestCounts = make(map[string]RequestCounter, len(requestCountsList))
+		for _, counter := range requestCountsList {
+			s.requestCounts[counter.IP] = counter
 		}
 	}
 

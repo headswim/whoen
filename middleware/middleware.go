@@ -61,6 +61,17 @@ func New(options Options) (*Middleware, error) {
 		logger:  options.Logger,
 	}
 
+	// Log the configuration being used
+	m.logger.Printf("Initializing middleware with configuration:")
+	m.logger.Printf("  GracePeriod: %d", options.GracePeriod)
+	m.logger.Printf("  TimeoutEnabled: %v", options.TimeoutEnabled)
+	m.logger.Printf("  TimeoutDuration: %v", options.TimeoutDuration)
+	m.logger.Printf("  TimeoutIncrease: %s", options.TimeoutIncrease)
+	m.logger.Printf("  BlockedIPsFile: %s", options.Config.BlockedIPsFile)
+	m.logger.Printf("  SystemType: %s", options.Config.SystemType)
+	m.logger.Printf("  CleanupEnabled: %v", options.CleanupEnabled)
+	m.logger.Printf("  CleanupInterval: %v", options.CleanupInterval)
+
 	// Initialize storage if not provided
 	if options.Storage == nil {
 		storage, err := storage.NewJSONStorage(
@@ -150,6 +161,13 @@ func (m *Middleware) HandleRequest(r *http.Request) (bool, error) {
 		return false, err
 	}
 
+	// Get the current request count from storage
+	requestCount, err := m.storage.GetRequestCount(ip)
+	if err != nil {
+		m.logger.Printf("Error getting request count: %v", err)
+		return false, err
+	}
+
 	// Check if IP should be blocked
 	isBlocked, status, err := m.storage.IsIPBlocked(ip)
 	if err != nil {
@@ -170,12 +188,18 @@ func (m *Middleware) HandleRequest(r *http.Request) (bool, error) {
 		return true, nil
 	}
 
-	// Check if grace period is exceeded
-	if status != nil && status.RequestCount > m.options.GracePeriod {
+	// Check if grace period is exceeded using the request count from storage
+	if requestCount > m.options.GracePeriod {
 		// Grace period exceeded, block IP
 		if m.options.TimeoutEnabled {
+			// Get timeout count from storage
+			timeoutCount := 0
+			if status != nil {
+				timeoutCount = status.TimeoutCount
+			}
+
 			// Calculate timeout duration
-			duration := m.calculateTimeoutDuration(status.TimeoutCount)
+			duration := m.calculateTimeoutDuration(timeoutCount)
 
 			// Block IP with timeout
 			_, err = m.blocker.Block(ip, blocker.Timeout, duration)
@@ -196,7 +220,8 @@ func (m *Middleware) HandleRequest(r *http.Request) (bool, error) {
 				m.logger.Printf("Error incrementing timeout count: %v", err)
 			}
 
-			m.logger.Printf("Blocked IP %s for %s for accessing malicious path %s", ip, duration, r.URL.Path)
+			m.logger.Printf("Blocked IP %s for %s for accessing malicious path %s (count: %d)",
+				ip, duration, r.URL.Path, requestCount)
 		} else {
 			// Block IP permanently
 			_, err = m.blocker.Block(ip, blocker.Ban, 0)
@@ -211,13 +236,15 @@ func (m *Middleware) HandleRequest(r *http.Request) (bool, error) {
 				m.logger.Printf("Error updating storage: %v", err)
 			}
 
-			m.logger.Printf("Permanently blocked IP %s for accessing malicious path %s", ip, r.URL.Path)
+			m.logger.Printf("Permanently blocked IP %s for accessing malicious path %s (count: %d)",
+				ip, r.URL.Path, requestCount)
 		}
 
 		return true, nil
 	}
 
-	m.logger.Printf("Malicious request from %s to %s (count: %d)", ip, r.URL.Path, status.RequestCount)
+	m.logger.Printf("Malicious request from %s to %s (count: %d, threshold: %d)",
+		ip, r.URL.Path, requestCount, m.options.GracePeriod)
 	return false, nil
 }
 
@@ -235,11 +262,17 @@ func (m *Middleware) calculateTimeoutDuration(timeoutCount int) time.Duration {
 		for i := 0; i < timeoutCount; i++ {
 			multiplier *= 2
 		}
-		return baseDuration * time.Duration(multiplier)
+		duration := baseDuration * time.Duration(multiplier)
+		m.logger.Printf("Using geometric timeout increase: %v * %d = %v",
+			baseDuration, multiplier, duration)
+		return duration
 	}
 
 	// Linear increase: duration * (timeoutCount + 1)
-	return baseDuration * time.Duration(timeoutCount+1)
+	duration := baseDuration * time.Duration(timeoutCount+1)
+	m.logger.Printf("Using linear timeout increase: %v * %d = %v",
+		baseDuration, timeoutCount+1, duration)
+	return duration
 }
 
 // getClientIP gets the client IP from the request

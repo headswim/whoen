@@ -69,14 +69,24 @@ Adding Whoen to your application is simple:
    ```bash
    # Option 1: System-wide directory (requires sudo)
    sudo mkdir -p /var/lib/whoen
-   sudo chown <your-app-user> /var/lib/whoen
+   sudo chown <your-app-user>:<your-app-group> /var/lib/whoen
+   sudo chmod 755 /var/lib/whoen
    
    # Option 2: User directory
    mkdir -p ~/.whoen
+   chmod 755 ~/.whoen
    
-   # Option 3: Current directory (no setup needed)
-   # Whoen will use the current directory if options 1 and 2 fail
+   # Option 3: Custom directory (if you specify a custom storage directory in config)
+   mkdir -p /path/to/custom/dir
+   chmod 755 /path/to/custom/dir
    ```
+
+   **Directory Selection Priority:**
+   Whoen searches for storage directories in the following order:
+   1. Custom directory (if specified in your configuration)
+   2. System-wide directory (`/var/lib/whoen`)
+   3. User directory (`~/.whoen`)
+   4. Current working directory (fallback)
 
 That's it! Your application is now protected against malicious requests.
 
@@ -205,9 +215,9 @@ func main() {
 - Zero configuration required for basic protection
 
 ### 🛡️ Flexible Protection
-- Configurable grace period before blocking
+- Configurable grace period before blocking (default: 3 requests)
 - Temporary or permanent IP blocks
-- Increasing timeout durations for repeat offenders
+- Increasing timeout durations for repeat offenders (linear or geometric)
 
 ### 🔄 Seamless Integration
 - Works with standard Go HTTP servers
@@ -215,9 +225,10 @@ func main() {
 - Minimal code changes required
 
 ### 💾 Persistent Blocking
+- Request counts persist across application restarts
 - Blocks persist across application restarts
 - OS-level firewall integration for robust protection
-- JSON-based storage for block information
+- JSON-based storage for both block information and request counts
 
 ## Configuration
 
@@ -229,7 +240,7 @@ cfg := whoen.Config{
     // Where to store blocked IPs (defaults to ~/.whoen/blocked_ips.json)
     BlockedIPsFile: "blocked_ips.json",
     
-    // How many suspicious requests to allow before blocking (default: 1)
+    // How many suspicious requests to allow before blocking (default: 3)
     GracePeriod: 3,
     
     // Use temporary blocks instead of permanent bans (default: true)
@@ -247,10 +258,27 @@ cfg := whoen.Config{
     
     // How often to clean up expired blocks (default: 1 hour)
     CleanupInterval: 30 * time.Minute,
+    
+    // Directory to store all data files (defaults to auto-detection)
+    StorageDir: "/path/to/storage",
 }
 
 // Create middleware with custom configuration
 mw, err := whoen.NewWithConfig(cfg)
+```
+
+### Quick Custom Configuration
+
+For common configuration needs, you can use the simplified helper function:
+
+```go
+// Create middleware with specific settings
+mw, err := whoen.NewWithCustomSettings(
+    3,                  // Grace period (3 requests before blocking)
+    true,               // Enable timeout (temporary blocks)
+    1 * time.Hour,      // Timeout duration (1 hour)
+    "linear"            // Timeout increase method ("linear" or "geometric")
+)
 ```
 
 ### Whitelisting IPs
@@ -283,4 +311,4 @@ Each example demonstrates:
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License - see the LICENSE file for details. `

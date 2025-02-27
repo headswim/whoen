@@ -15,6 +15,16 @@ type BlockStatus struct {
 	LastRequestPath string    `json:"last_request_path"`
 }
 
+// RequestCounter represents the request count for an IP
+type RequestCounter struct {
+	IP           string    `json:"ip"`
+	Count        int       `json:"count"`
+	LastSeen     time.Time `json:"last_seen"`
+	LastPath     string    `json:"last_path"`
+	FirstSeen    time.Time `json:"first_seen"`
+	TimeoutCount int       `json:"timeout_count"`
+}
+
 // Storage defines the interface for storing and retrieving blocked IPs
 type Storage interface {
 	// Blocked IPs management
@@ -24,6 +34,12 @@ type Storage interface {
 	GetBlockedIPs() ([]BlockStatus, error)
 	IncrementRequestCount(ip string, path string) error
 	IncrementTimeoutCount(ip string) error
+
+	// Request counter management
+	GetRequestCount(ip string) (int, error)
+	SetRequestCount(ip string, count int, path string) error
+	ResetRequestCount(ip string) error
+	GetAllRequestCounts() (map[string]RequestCounter, error)
 
 	// Cleanup expired blocks
 	CleanupExpired() error

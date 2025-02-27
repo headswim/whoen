@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/headswim/whoen/blocker"
 	"github.com/headswim/whoen/config"
@@ -21,6 +22,9 @@ func New() (*middleware.Middleware, error) {
 
 // NewWithConfig creates a new instance of the whoen middleware with custom configuration
 func NewWithConfig(cfg config.Config) (*middleware.Middleware, error) {
+	// Validate and set defaults for the configuration
+	config.ValidateConfig(&cfg)
+
 	// Auto-detect system type if not specified
 	if cfg.SystemType == "" {
 		cfg.SystemType = getSystemType()
@@ -55,6 +59,17 @@ func NewWithConfig(cfg config.Config) (*middleware.Middleware, error) {
 
 	// Create middleware
 	return middleware.New(opts)
+}
+
+// NewWithCustomSettings creates a new instance of the whoen middleware with specific settings
+func NewWithCustomSettings(gracePeriod int, timeoutEnabled bool, timeoutDuration time.Duration, timeoutIncrease string) (*middleware.Middleware, error) {
+	cfg := config.DefaultConfig()
+	cfg.GracePeriod = gracePeriod
+	cfg.TimeoutEnabled = timeoutEnabled
+	cfg.TimeoutDuration = timeoutDuration
+	cfg.TimeoutIncrease = timeoutIncrease
+
+	return NewWithConfig(cfg)
 }
 
 // getSystemType returns the appropriate system type based on runtime.GOOS

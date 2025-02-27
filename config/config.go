@@ -27,7 +27,7 @@ func DefaultConfig() Config {
 
 	return Config{
 		BlockedIPsFile:  filepath.Join(storageDir, "blocked_ips.json"),
-		GracePeriod:     1,                                      // 0 will block on first attempt
+		GracePeriod:     3,                                      // Default to 3 requests before blocking
 		TimeoutEnabled:  true,                                   // Enable timeout
 		TimeoutDuration: 24 * time.Hour,                         // Timeout duration must be set if timeout is enabled
 		TimeoutIncrease: "linear",                               // Timeout increase type (linear / geometric)
@@ -36,6 +36,36 @@ func DefaultConfig() Config {
 		CleanupEnabled:  true,                                   // Enable cleanup by default
 		CleanupInterval: 1 * time.Hour,                          // Run cleanup every hour
 		StorageDir:      storageDir,                             // Store the directory for future reference
+	}
+}
+
+// ValidateConfig validates the configuration and sets defaults for missing values
+func ValidateConfig(cfg *Config) {
+	// Set default values for empty fields
+	if cfg.BlockedIPsFile == "" {
+		cfg.BlockedIPsFile = "blocked_ips.json"
+	}
+
+	if cfg.GracePeriod < 0 {
+		cfg.GracePeriod = 3 // Default to 3 requests before blocking
+	}
+
+	if cfg.TimeoutDuration <= 0 {
+		cfg.TimeoutDuration = 24 * time.Hour
+	}
+
+	// Ensure TimeoutIncrease is valid
+	if cfg.TimeoutIncrease != "linear" && cfg.TimeoutIncrease != "geometric" {
+		cfg.TimeoutIncrease = "linear" // Default to linear
+	}
+
+	if cfg.CleanupInterval <= 0 {
+		cfg.CleanupInterval = 1 * time.Hour
+	}
+
+	// Ensure storage directory exists
+	if cfg.StorageDir == "" {
+		cfg.StorageDir = "."
 	}
 }
 
