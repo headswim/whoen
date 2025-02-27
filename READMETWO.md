@@ -67,26 +67,17 @@ Adding Whoen to your application is simple:
 
 5. **Set up storage directory** (one-time setup, before running your app)
    ```bash
-   # Option 1: System-wide directory (requires sudo)
-   sudo mkdir -p /var/lib/whoen
-   sudo chown <your-app-user>:<your-app-group> /var/lib/whoen
-   sudo chmod 755 /var/lib/whoen
+   # Ensure your application directory is writable
+   # The storage files will be created in the current working directory
+   # where your application runs
    
-   # Option 2: User directory
-   mkdir -p ~/.whoen
-   chmod 755 ~/.whoen
+   # Create empty JSON files (optional, but recommended)
+   echo "[]" > blocked_ips.json
+   echo "[]" > request_counts.json
    
-   # Option 3: Custom directory (if you specify a custom storage directory in config)
-   mkdir -p /path/to/custom/dir
-   chmod 755 /path/to/custom/dir
+   # Set appropriate permissions
+   chmod 644 blocked_ips.json request_counts.json
    ```
-
-   **Directory Selection Priority:**
-   Whoen searches for storage directories in the following order:
-   1. Custom directory (if specified in your configuration)
-   2. System-wide directory (`/var/lib/whoen`)
-   3. User directory (`~/.whoen`)
-   4. Current working directory (fallback)
 
 That's it! Your application is now protected against malicious requests.
 
@@ -237,7 +228,7 @@ Whoen works out of the box with sensible defaults, but you can customize it to s
 ```go
 // Create custom configuration
 cfg := whoen.Config{
-    // Where to store blocked IPs (defaults to ~/.whoen/blocked_ips.json)
+    // Where to store blocked IPs (defaults to blocked_ips.json in current directory)
     BlockedIPsFile: "blocked_ips.json",
     
     // How many suspicious requests to allow before blocking (default: 3)
@@ -259,8 +250,8 @@ cfg := whoen.Config{
     // How often to clean up expired blocks (default: 1 hour)
     CleanupInterval: 30 * time.Minute,
     
-    // Directory to store all data files (defaults to auto-detection)
-    StorageDir: "/path/to/storage",
+    // Directory to store all data files (defaults to current directory)
+    StorageDir: "/path/to/custom/storage",
 }
 
 // Create middleware with custom configuration

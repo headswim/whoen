@@ -2,6 +2,8 @@ package storage
 
 import (
 	"encoding/json"
+	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -45,7 +47,10 @@ func NewJSONStorage(blockedIPsFile string) (*JSONStorage, error) {
 		for {
 			select {
 			case <-storage.saveTicker.C:
-				_ = storage.Save()
+				log.Printf("[whoen-debug] Running periodic save")
+				if err := storage.Save(); err != nil {
+					log.Printf("[whoen-error] Error in periodic save: %v", err)
+				}
 			case <-storage.done:
 				return
 			}
@@ -257,6 +262,15 @@ func (s *JSONStorage) GetAllRequestCounts() (map[string]RequestCounter, error) {
 
 // Save saves the data to disk
 func (s *JSONStorage) Save() error {
+	log.Printf("[whoen-debug] Starting save operation to %s and %s", s.blockedIPsFile, s.requestCountsFile)
+
+	// Create directory if it doesn't exist
+	dir := filepath.Dir(s.blockedIPsFile)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("[whoen-error] Failed to create directory %s: %v", dir, err)
+		return fmt.Errorf("failed to create directory %s: %v", dir, err)
+	}
+
 	// Save blocked IPs
 	blockedIPsList := make([]BlockStatus, 0, len(s.blockedIPs))
 	for _, status := range s.blockedIPs {
@@ -265,12 +279,16 @@ func (s *JSONStorage) Save() error {
 
 	blockedIPsData, err := json.MarshalIndent(blockedIPsList, "", "  ")
 	if err != nil {
-		return err
+		log.Printf("[whoen-error] Failed to marshal blocked IPs: %v", err)
+		return fmt.Errorf("failed to marshal blocked IPs: %v", err)
 	}
+	log.Printf("[whoen-debug] Marshaled %d blocked IPs", len(blockedIPsList))
 
 	if err := os.WriteFile(s.blockedIPsFile, blockedIPsData, 0644); err != nil {
-		return err
+		log.Printf("[whoen-error] Failed to write blocked IPs file: %v", err)
+		return fmt.Errorf("failed to write blocked IPs file: %v", err)
 	}
+	log.Printf("[whoen-debug] Successfully wrote blocked IPs to %s", s.blockedIPsFile)
 
 	// Save request counts
 	requestCountsList := make([]RequestCounter, 0, len(s.requestCounts))
@@ -280,10 +298,19 @@ func (s *JSONStorage) Save() error {
 
 	requestCountsData, err := json.MarshalIndent(requestCountsList, "", "  ")
 	if err != nil {
-		return err
+		log.Printf("[whoen-error] Failed to marshal request counts: %v", err)
+		return fmt.Errorf("failed to marshal request counts: %v", err)
 	}
+	log.Printf("[whoen-debug] Marshaled %d request counts", len(requestCountsList))
 
-	return os.WriteFile(s.requestCountsFile, requestCountsData, 0644)
+	if err := os.WriteFile(s.requestCountsFile, requestCountsData, 0644); err != nil {
+		log.Printf("[whoen-error] Failed to write request counts file: %v", err)
+		return fmt.Errorf("failed to write request counts file: %v", err)
+	}
+	log.Printf("[whoen-debug] Successfully wrote request counts to %s", s.requestCountsFile)
+
+	log.Printf("[whoen-debug] Save operation completed successfully")
+	return nil
 }
 
 // Load loads the data from disk
