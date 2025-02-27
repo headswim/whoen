@@ -7,6 +7,7 @@
 <p align="center">
   <a href="#overview">Overview</a> •
   <a href="#installation">Installation</a> •
+  <a href="#system-configuration">System Configuration</a> •
   <a href="#integration">Integration</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#key-features">Key Features</a> •
@@ -26,6 +27,40 @@ Designed to be framework-agnostic, Whoen integrates seamlessly with standard Go 
 ```bash
 go get github.com/headswim/whoen
 ```
+
+## System Configuration
+
+### Sudoers Setup (Required for IP Blocking)
+The middleware needs permission to add iptables rules for IP blocking. Configure this one-time setup:
+
+1. Create a new sudoers file:
+```bash
+echo "${USER} ALL=(root) NOPASSWD: /usr/sbin/iptables -I INPUT 1 -s * -j DROP" > /etc/sudoers.d/whoen-iptables
+```
+Replace `${USER}` with your web application user (e.g., www-data, nginx, apache)
+
+2. Set proper permissions:
+```bash
+chmod 440 /etc/sudoers.d/whoen-iptables
+```
+
+### Directory Setup
+1. Create your application directory:
+```bash
+mkdir -p /var/www/your-project
+```
+
+2. Set proper ownership:
+```bash
+chown ${USER}:${USER} /var/www/your-project
+```
+
+3. Set proper permissions:
+```bash
+chmod 755 /var/www/your-project
+```
+
+Replace `/var/www/your-project` with your installation directory and `${USER}` with your web application user.
 
 ## Integration
 

@@ -315,23 +315,32 @@ func (s *JSONStorage) Save() error {
 
 // Load loads the data from disk
 func (s *JSONStorage) Load() error {
+	log.Printf("[whoen-debug] Starting load operation from %s and %s", s.blockedIPsFile, s.requestCountsFile)
+
+	// Initialize maps if they don't exist
+	if s.blockedIPs == nil {
+		s.blockedIPs = make(map[string]BlockStatus)
+	}
+	if s.requestCounts == nil {
+		s.requestCounts = make(map[string]RequestCounter)
+	}
+
 	// Load blocked IPs
 	blockedIPsData, err := os.ReadFile(s.blockedIPsFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// File doesn't exist, initialize with empty data
-			s.blockedIPs = make(map[string]BlockStatus)
+			log.Printf("[whoen-debug] Blocked IPs file doesn't exist, starting with empty map")
 		} else {
-			return err
+			log.Printf("[whoen-error] Error reading blocked IPs file: %v", err)
+			return fmt.Errorf("error reading blocked IPs file: %v", err)
 		}
 	} else {
 		var blockedIPsList []BlockStatus
-		err = json.Unmarshal(blockedIPsData, &blockedIPsList)
-		if err != nil {
-			return err
+		if err := json.Unmarshal(blockedIPsData, &blockedIPsList); err != nil {
+			log.Printf("[whoen-error] Error unmarshaling blocked IPs: %v", err)
+			return fmt.Errorf("error unmarshaling blocked IPs: %v", err)
 		}
-
-		s.blockedIPs = make(map[string]BlockStatus, len(blockedIPsList))
+		log.Printf("[whoen-debug] Loaded %d blocked IPs from file", len(blockedIPsList))
 		for _, status := range blockedIPsList {
 			s.blockedIPs[status.IP] = status
 		}
@@ -341,24 +350,24 @@ func (s *JSONStorage) Load() error {
 	requestCountsData, err := os.ReadFile(s.requestCountsFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// File doesn't exist, initialize with empty data
-			s.requestCounts = make(map[string]RequestCounter)
+			log.Printf("[whoen-debug] Request counts file doesn't exist, starting with empty map")
 		} else {
-			return err
+			log.Printf("[whoen-error] Error reading request counts file: %v", err)
+			return fmt.Errorf("error reading request counts file: %v", err)
 		}
 	} else {
 		var requestCountsList []RequestCounter
-		err = json.Unmarshal(requestCountsData, &requestCountsList)
-		if err != nil {
-			return err
+		if err := json.Unmarshal(requestCountsData, &requestCountsList); err != nil {
+			log.Printf("[whoen-error] Error unmarshaling request counts: %v", err)
+			return fmt.Errorf("error unmarshaling request counts: %v", err)
 		}
-
-		s.requestCounts = make(map[string]RequestCounter, len(requestCountsList))
+		log.Printf("[whoen-debug] Loaded %d request counts from file", len(requestCountsList))
 		for _, counter := range requestCountsList {
 			s.requestCounts[counter.IP] = counter
 		}
 	}
 
+	log.Printf("[whoen-debug] Load operation completed successfully")
 	return nil
 }
 
