@@ -41,6 +41,17 @@ func NewJSONStorage(blockedIPsFile string) (*JSONStorage, error) {
 		return nil, err
 	}
 
+	// Check existing request counts and block IPs over threshold
+	for ip, counter := range storage.requestCounts {
+		if counter.Count >= 3 { // Using default threshold of 3
+			log.Printf("[whoen-debug] Found existing IP %s over threshold (count: %d), blocking", ip, counter.Count)
+			until := time.Now().Add(24 * time.Hour) // Using default timeout
+			if err := storage.BlockIP(ip, until, false, counter.LastPath); err != nil {
+				log.Printf("[whoen-error] Failed to block IP %s: %v", ip, err)
+			}
+		}
+	}
+
 	// Start periodic saving
 	storage.saveTicker = time.NewTicker(5 * time.Minute)
 	go func() {
